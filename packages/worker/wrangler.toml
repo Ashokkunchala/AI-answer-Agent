@@ -1,0 +1,30 @@
+name = "devops-ai-agent"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+[vars]
+ENVIRONMENT = "production"
+
+# “€â”€ Optional: AI Gateway premium fallback (gpt-5.6-sol) â”€â”€
+# Uncomment and fill in to enable the safety-net gateway provider.
+# GATEWAY_ACCOUNT_ID = "your_24_hex_cloudflare_account_id"
+# GATEWAY_NAME = "generic"
+# Prefer secrets (wrangler secret put) over plaintext VARS:
+#   GATEWAY_API_TOKEN  ->  Cloudflare API token (AI Gateway permission)
+#   GATEWAY_API_KEY    ->  legacy AI Gateway /v1 endpoint key (subset of token auth)
+# Set via: npx wrangler secret put GATEWAY_API_TOKEN
+
+[[kv_namespaces]]
+binding = "API_KEYS"
+# Replace with your own KV namespace ID after running: npx wrangler kv namespace create API_KEYS
+id = "c86c6823303947c49f35fa12cb52df8f"
+
+[ai]
+binding = "AI"
+
+[[websockets]]
+binding = "VOICE_SOCKET"

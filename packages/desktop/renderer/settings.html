@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #0a0a14;
+      --bg-card: rgba(35, 35, 60, 0.7);
+      --bg-input: rgba(25, 25, 45, 0.9);
+      --accent: #F6821F;
+      --accent-hover: #FB8B26;
+      --text-primary: #EAEAEA;
+      --text-secondary: #9999BB;
+      --text-muted: #666688;
+      --success: #4ADE80;
+      --error: #F87171;
+      --warning: #FBBF24;
+      --border: rgba(255, 255, 255, 0.06);
+    }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text-primary);
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    .titlebar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: rgba(15, 15, 28, 0.95);
+      border-bottom: 1px solid var(--border);
+      -webkit-app-region: drag;
+      flex-shrink: 0;
+    }
+    .titlebar-title { font-size: 13px; font-weight: 600; }
+    .titlebar-btn {
+      -webkit-app-region: no-drag;
+      width: 28px; height: 28px;
+      border: none; border-radius: 6px;
+      background: rgba(255,255,255,0.05);
+      color: var(--text-secondary);
+      font-size: 14px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .titlebar-btn:hover { background: rgba(255,255,255,0.1); }
+
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+    }
+    .content::-webkit-scrollbar { width: 4px; }
+    .content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+    /* Step indicator */
+    .steps {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 14px;
+    }
+    .step-dot {
+      flex: 1;
+      height: 3px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.08);
+      transition: background 0.3s;
+    }
+    .step-dot.active { background: var(--accent); }
+    .step-dot.done { background: var(--success); }
+
+    /* Provider header card */
+    .cf-card {
+      border: 1.5px solid rgba(246, 130, 31, 0.4);
+      border-radius: 10px;
+      background: rgba(246, 130, 31, 0.06);
+      padding: 12px;
+      margin-bottom: 14px;
+      text-align: center;
+    }
+    .cf-card .icon { font-size: 22px; }
+    .cf-card .name { font-size: 13px; font-weight: 700; color: var(--accent); margin-top: 4px; }
+    .cf-card .desc { font-size: 10px; color: var(--text-secondary); margin-top: 2px; }
+
+    /* Inputs */
+    .key-section { margin-bottom: 12px; }
+    .field label {
+      display: block;
+      font-size: 10px;
+      color: var(--text-secondary);
+      margin-bottom: 3px;
+    }
+    .key-input-wrap { position: relative; }
+    .key-input {
+      width: 100%;
+      padding: 10px 36px 10px 10px;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      font-size: 12px;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .key-input:focus { border-color: var(--accent); }
+    .key-input::placeholder { color: var(--text-muted); font-family: 'Inter', sans-serif; }
+    .key-toggle {
+      position: absolute;
+      right: 6px; top: 50%; transform: translateY(-50%);
+      background: none; border: none;
+      color: var(--text-muted); cursor: pointer;
+      font-size: 14px; padding: 4px;
+    }
+    .key-toggle:hover { color: var(--text-secondary); }
+    .hint {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* Model picker */
+    .model-section { margin-bottom: 14px; }
+    .model-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 4px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+    .model-grid::-webkit-scrollbar { width: 3px; }
+    .model-grid::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+    .model-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.02);
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+    .model-option:hover { background: rgba(255,255,255,0.05); }
+    .model-option.selected {
+      border-color: var(--accent);
+      background: rgba(246, 130, 31, 0.08);
+    }
+    .model-option .model-name {
+      flex: 1;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .model-option .model-tags { display: flex; gap: 3px; }
+    .tag {
+      font-size: 8px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .tag.fast { background: rgba(251,191,36,0.12); color: var(--warning); }
+    .tag.smart { background: rgba(108,99,255,0.12); color: #A79BFF; }
+    .tag.reasoning { background: rgba(56,189,248,0.12); color: #38BDF8; }
+    .custom-model-row {
+      display: none;
+      margin-top: 6px;
+    }
+    .custom-model-row.show { display: block; }
+    .custom-input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      font-size: 11px;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      outline: none;
+    }
+    .custom-input:focus { border-color: var(--accent); }
+
+    /* File upload row */
+    .file-upload {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+      font-size: 10px;
+      color: var(--text-secondary);
+    }
+    .file-upload input[type="file"] { flex: 1; min-width: 0; font-size: 9px; color: var(--text-muted); }
+    .upload-btn, .clear-btn {
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: rgba(255,255,255,0.04);
+      color: var(--text-secondary);
+      font-size: 10px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .upload-btn:hover, .clear-btn:hover { background: rgba(255,255,255,0.08); color: var(--text-primary); }
+
+    /* Collapsible sections */
+    .advanced-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 0;
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--text-muted);
+      border: none;
+      background: none;
+      font-family: inherit;
+      width: 100%;
+    }
+    .advanced-toggle:hover { color: var(--text-secondary); }
+    .advanced-toggle .arrow { transition: transform 0.2s; font-size: 10px; }
+    .advanced-toggle .arrow.open { transform: rotate(90deg); }
+    .guide-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 0;
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--text-secondary);
+      border: none;
+      background: none;
+      font-family: inherit;
+    }
+    .guide-toggle:hover { color: var(--text-primary); }
+    .guide-toggle .arrow { transition: transform 0.2s; font-size: 10px; }
+    .guide-toggle .arrow.open { transform: rotate(90deg); }
+    .guide-body {
+      display: none;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 14px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+    .guide-body.open { display: block; }
+    .guide-body a { color: var(--accent); text-decoration: none; }
+    .guide-body a:hover { text-decoration: underline; }
+    .guide-body strong { color: var(--text-primary); }
+    .guide-body ol { margin: 4px 0 4px 16px; padding: 0; }
+    .guide-body li { margin-bottom: 3px; }
+    .guide-body .code {
+      display: inline-block;
+      background: rgba(246,130,31,0.12);
+      color: var(--accent);
+      padding: 0px 5px;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 10px;
+    }
+
+    .advanced-body { display: none; }
+    .advanced-body.open { display: block; }
+
+    .field { margin-bottom: 10px; }
+    .field input, .field select {
+      width: 100%;
+      padding: 7px 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      font-size: 11px;
+      font-family: inherit;
+      outline: none;
+    }
+    .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
+    .field textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      font-size: 11px;
+      font-family: inherit;
+      outline: none;
+      resize: vertical;
+      min-height: 60px;
+    }
+    .field select { cursor: pointer; }
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .slider-row input[type="range"] { flex: 1; }
+    .slider-value {
+      font-size: 10px;
+      color: var(--text-secondary);
+      min-width: 40px;
+      text-align: right;
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      height: 3px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.1);
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+    }
+
+    .save-section {
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .save-btn {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 12px;
+      font-family: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .save-btn:hover { background: var(--accent-hover); }
+
+    .toast {
+      display: none;
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 8px 20px;
+      background: var(--success);
+      color: #000;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      z-index: 999;
+    }
+    .toast.show { display: block; animation: fadeToast 2s ease forwards; }
+    @keyframes fadeToast {
+      0% { opacity: 0; transform: translateX(-50%) translateY(10px); }
+      15% { opacity: 1; transform: translateX(-50%) translateY(0); }
+      85% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="titlebar">
+      <div class="titlebar-title">Settings</div>
+      <button class="titlebar-btn" id="closeBtn">&times;</button>
+    </div>
+
+    <div class="content">
+      <!-- Cloudflare Agent card -->
+      <div class="cf-card">
+        <div class="icon">&#9729;</div>
+        <div class="name">DevOps AI Agent &mdash; Cloudflare</div>
+        <div class="desc">Chat answers + Mic speech-to-text via your worker</div>
+      </div>
+
+      <!-- Step indicator -->
+      <div class="steps">
+        <div class="step-dot" id="step1"></div>
+        <div class="step-dot" id="step2"></div>
+        <div class="step-dot" id="step3"></div>
+      </div>
+
+      <!-- Step 1: Worker URL + API Key -->
+      <div class="key-section">
+        <div class="field">
+          <label>Worker URL</label>
+          <input type="text" id="workerUrl" class="custom-input" placeholder="https://your-worker.workers.dev" />
+          <div class="hint">Your devops-ai-agent deployment URL.</div>
+        </div>
+        <div class="field">
+          <label>API Key (optional)</label>
+          <div class="key-input-wrap">
+            <input type="password" class="key-input" id="apiKey" placeholder="dvops_... (empty = anonymous)" />
+            <button class="key-toggle" id="keyToggle" title="Show/hide key">&#128065;</button>
+          </div>
+          <div class="hint">Keyless works too. Create one at /dashboard &rarr; API Keys.</div>
+        </div>
+      </div>
+
+      <!-- Step 2: Model -->
+      <div class="model-section" id="modelSection">
+        <div class="model-grid" id="modelGrid"></div>
+        <div class="custom-model-row" id="customRow">
+          <input type="text" class="custom-input" id="modelCustom" placeholder="Type model name (e.g. llama-3.3-70b)" />
+        </div>
+        <button class="advanced-toggle" id="reloadModelsBtn">&#8635; Reload model list from worker</button>
+      </div>
+
+      <!-- Setup guide (collapsed) -->
+      <button class="guide-toggle" id="guideToggle">
+        <span class="arrow" id="guideArrow">&#9654;</span>
+        How to connect
+      </button>
+      <div class="guide-body" id="guideBody">
+        <strong>Connect to your DevOps AI Agent</strong>
+        <ol>
+          <li>Your <strong>Worker URL</strong> is pre-filled &mdash; edit it only if you deployed your own</li>
+          <li>Optional: open <span class="code">/dashboard</span> &rarr; <strong>API Keys</strong> tab to create a key</li>
+          <li>Paste the key (<span class="code">dvops_...</span>) above and Save</li>
+        </ol>
+        <strong>Note:</strong> Keyless requests work with unlimited usage (anonymous access).<br>
+        <strong>Mic STT:</strong> Routed through the same worker (Workers AI transcription).<br>
+        <strong>Model:</strong> List loads from the worker. <span class="code">Auto</span> smart-routes each question.
+      </div>
+
+      <!-- Profile & Meeting -->
+      <div class="section-block">
+        <button class="advanced-toggle" id="profileToggle">
+          <span class="arrow" id="profileArrow">&#9654;</span>
+          Profile &amp; Meeting Mode
+        </button>
+        <div class="advanced-body" id="profileBody">
+          <div class="field">
+            <label>Your Resume / Experience</label>
+            <div class="file-upload">
+        <input type="file" id="resumeFile" accept=".txt,.md,.json,.csv" />
+        <div class="file-info">
+          <span id="resumeFileName">No file chosen</span>
+          <button type="button" id="resumeUploadBtn" class="upload-btn">Upload</button>
+          <button type="button" id="resumeClearBtn" class="clear-btn">Clear</button>
+        </div>
+      </div>
+      <textarea id="resume" rows="5" placeholder="Your resume content will appear here..."></textarea>
+            <div class="hint">AI uses this to answer as YOU. Include skills, experience, certifications.</div>
+          </div>
+          <div class="field">
+            <label>Job Description / Role</label>
+            <div class="file-upload">
+        <input type="file" id="jobDescFile" accept=".txt,.md,.json,.csv" />
+        <div class="file-info">
+          <span id="jobDescFileName">No file chosen</span>
+          <button type="button" id="jobDescUploadBtn" class="upload-btn">Upload</button>
+          <button type="button" id="jobDescClearBtn" class="clear-btn">Clear</button>
+        </div>
+      </div>
+      <textarea id="jobDesc" rows="4" placeholder="Job description content will appear here..."></textarea>
+            <div class="hint">AI tailors answers to match this role.</div>
+          </div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:10px 0;" />
+          <div class="field">
+            <label>Meeting Participants (up to 5 names)</label>
+            <div id="participantList">
+              <input type="text" class="custom-input participant-input" data-idx="0" placeholder="Name 1 (interviewer)" />
+              <input type="text" class="custom-input participant-input" data-idx="1" placeholder="Name 2 (optional)" style="margin-top:4px;" />
+              <input type="text" class="custom-input participant-input" data-idx="2" placeholder="Name 3 (optional)" style="margin-top:4px;" />
+              <input type="text" class="custom-input participant-input" data-idx="3" placeholder="Name 4 (optional)" style="margin-top:4px;" />
+              <input type="text" class="custom-input participant-input" data-idx="4" placeholder="Name 5 (optional)" style="margin-top:4px;" />
+            </div>
+            <div class="hint">AI identifies speakers by voice. Add names you expect in the meeting.</div>
+          </div>
+          <div class="field">
+            <label>Target Person (who asks you questions)</label>
+            <input type="text" id="targetName" class="custom-input" placeholder="e.g. Interviewer name" />
+            <div class="hint">AI prioritizes answers when this person speaks.</div>
+          </div>
+          <div class="field">
+            <label>Focus Mode</label>
+            <select id="focusMode">
+              <option value="all">All Questions</option>
+              <option value="participants">Only from Participants</option>
+              <option value="target">Only from Target Person</option>
+            </select>
+            <div class="hint">Control which questions the AI answers.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Advanced settings (collapsed) -->
+      <button class="advanced-toggle" id="advToggle">
+        <span class="arrow" id="advArrow">&#9654;</span>
+        Advanced settings
+      </button>
+      <div class="advanced-body" id="advBody">
+        <div class="field">
+          <label>Capture Delay</label>
+          <div class="slider-row">
+            <input type="range" id="captureDelay" min="200" max="3000" step="100" />
+            <span class="slider-value" id="captureDelayVal">500ms</span>
+          </div>
+        </div>
+        <div class="field">
+          <label>Font Size</label>
+          <div class="slider-row">
+            <input type="range" id="fontSize" min="10" max="24" step="1" />
+            <span class="slider-value" id="fontSizeVal">14px</span>
+          </div>
+        </div>
+        <div class="field">
+          <label>Overlay Opacity</label>
+          <div class="slider-row">
+            <input type="range" id="overlayOpacity" min="0.5" max="1" step="0.05" />
+            <span class="slider-value" id="overlayOpacityVal">0.95</span>
+          </div>
+        </div>
+        <hr style="border:none;border-top:1px solid var(--border);margin:10px 0;" />
+        <div class="field">
+          <label>Mic Device</label>
+          <select id="micDevice"><option value="default">System Default</option></select>
+        </div>
+        <div class="field">
+          <label>Language</label>
+          <select id="micLanguage">
+            <option value="en">English</option>
+            <option value="hi">Hindi</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="ja">Japanese</option>
+            <option value="zh">Chinese</option>
+            <option value="ar">Arabic</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>OCR Language</label>
+          <select id="ocrLanguage">
+            <option value="eng">English</option>
+            <option value="spa">Spanish</option>
+            <option value="fra">French</option>
+            <option value="deu">German</option>
+            <option value="jpn">Japanese</option>
+            <option value="chi_sim">Chinese Simplified</option>
+            <option value="chi_tra">Chinese Traditional</option>
+            <option value="kor">Korean</option>
+            <option value="ita">Italian</option>
+            <option value="por">Portuguese</option>
+            <option value="rus">Russian</option>
+            <option value="ara">Arabic</option>
+            <option value="hin">Hindi</option>
+          </select>
+          <div class="hint">Tesseract OCR language codes. Different from mic language.</div>
+        </div>
+        <div class="field">
+          <label>Auto-Send Delay</label>
+          <div class="slider-row">
+            <input type="range" id="micAutoSendDelay" min="500" max="5000" step="250" />
+            <span class="slider-value" id="micAutoSendDelayVal">2000ms</span>
+          </div>
+        </div>
+        <div class="field">
+          <label>VAD Threshold</label>
+          <div class="slider-row">
+            <input type="range" id="micVadThreshold" min="5" max="50" step="1" />
+            <span class="slider-value" id="micVadThresholdVal">15</span>
+          </div>
+        </div>
+        <div class="field">
+          <label>Mic Boost</label>
+          <div class="slider-row">
+            <input type="range" id="micGain" min="0.5" max="4" step="0.25" />
+            <span class="slider-value" id="micGainVal">1.5x</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stealth Settings -->
+      <div class="section" style="margin-top:12px;">
+        <h3 class="section-title" style="color:#8B5CF6;">&#128065; Stealth</h3>
+        <div class="field">
+          <label>Overlay Opacity</label>
+          <div class="slider-row">
+            <input type="range" id="stealthOpacity" min="0.05" max="1" step="0.05" />
+            <span class="slider-value" id="stealthOpacityVal">0.95</span>
+          </div>
+          <div class="hint">Lower values make the overlay more transparent</div>
+        </div>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="stealthClickThrough" />
+            Click-through mode (overlay ignores mouse clicks)
+          </label>
+        </div>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="stealthTitleRotation" checked />
+            Randomize window title (rotates periodically)
+          </label>
+        </div>
+        <div class="field">
+          <label>Window Title</label>
+          <input type="text" id="stealthCustomTitle" placeholder="e.g. Settings" />
+          <div class="hint">Set a custom decoy title (leave empty for random rotation)</div>
+        </div>
+        <div id="stealthStatus" style="margin-top:8px;padding:8px 12px;background:var(--input);border-radius:8px;font-size:.8em;color:var(--text2);">
+          Loading stealth status...
+        </div>
+      </div>
+    </div>
+
+    <div class="save-section">
+      <button class="save-btn" id="saveBtn">Save Settings</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">Settings Saved!</div>
+
+<script>
+let config = {};
+let selectedModel = 'auto';
+let MODELS = [];
+
+const DEFAULT_WORKER_URL = '';
+
+// Used if the worker model list can't be fetched (fast models first for <2s answers)
+const FALLBACK_MODELS = [
+  { id: 'llama-3.2-3b', name: 'Llama 3.2 3B (fast)', tags: ['fast'] },
+  { id: 'llama-3.2-1b', name: 'Llama 3.2 1B (fastest)', tags: ['fast'] },
+  { id: 'llama-3.1-8b', name: 'Llama 3.1 8B', tags: ['fast'] },
+  { id: 'auto', name: 'Auto (smart routing)', tags: ['smart'] }
+];
+
+function workerBase() {
+  return (document.getElementById('workerUrl').value.trim() || DEFAULT_WORKER_URL).replace(/\/+$/, '');
+}
+
+async function loadModels() {
+  const grid = document.getElementById('modelGrid');
+  grid.innerHTML = '<div style="font-size:10px;color:var(--text-muted);padding:6px 2px;">Loading models from worker...</div>';
+  let list = FALLBACK_MODELS.slice();
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(workerBase() + '/v1/models', { signal: controller.signal });
+    clearTimeout(t);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
+    const fetched = (d.data || []).map(m => ({
+      id: m.id,
+      name: m.name || m.id,
+      tags: m.speed ? [String(m.speed).replace('est', '')] : []
+    }));
+    if (fetched.length) {
+      list = [{ id: 'auto', name: 'Auto (smart routing)', tags: ['fast'] }, ...fetched];
+    }
+  } catch (e) {
+    console.log('Could not fetch models, using fallback:', e.message);
+  }
+  MODELS = list;
+  // If current selection isn't in the list, treat it as a custom model
+  if (!MODELS.some(m => m.id === selectedModel)) {
+    document.getElementById('modelCustom').value = selectedModel;
+    selectedModel = '__custom__';
+  }
+  renderModels();
+  updateSteps();
+}
+
+function renderModels() {
+  const grid = document.getElementById('modelGrid');
+  grid.innerHTML = '';
+  const allModels = [...MODELS, { id: '__custom__', name: 'Custom model...', tags: [] }];
+  allModels.forEach(m => {
+    const div = document.createElement('div');
+    div.className = 'model-option' + (m.id === selectedModel ? ' selected' : '');
+    if (m.id === '__custom__') {
+      div.innerHTML = `<span class="model-name">${m.name}</span>`;
+    } else {
+      const tags = (m.tags || []).map(t => `<span class="tag ${t}">${t}</span>`).join('');
+      div.innerHTML = `<span class="model-name">${m.name}</span><span class="model-tags">${tags}</span>`;
+    }
+    div.addEventListener('click', () => {
+      selectedModel = m.id;
+      document.getElementById('customRow').className = m.id === '__custom__' ? 'custom-model-row show' : 'custom-model-row';
+      renderModels();
+      updateSteps();
+    });
+    grid.appendChild(div);
+  });
+}
+
+function updateSteps() {
+  const connected = !!document.getElementById('workerUrl').value.trim();
+  const hasModel = !!selectedModel && selectedModel !== '' && selectedModel !== '__custom__';
+  const profileReady = !!(document.getElementById('resume').value.trim() || document.getElementById('jobDesc').value.trim());
+  document.getElementById('step1').className = connected ? 'step-dot done' : 'step-dot active';
+  document.getElementById('step2').className = hasModel ? 'step-dot done' : 'step-dot active';
+  document.getElementById('step3').className = profileReady ? 'step-dot done' : 'step-dot';
+}
+
+async function init() {
+  // Wait for the preload bridge before reading config (avoids cold-start race).
+  const started = Date.now();
+  while (!window.electronAPI || !window.electronAPI.getConfig) {
+    if (Date.now() - started > 15000) break;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  if (!window.electronAPI || !window.electronAPI.getConfig) {
+    const status = document.getElementById('statusText');
+    if (status) status.textContent = 'Init error: preload bridge unavailable';
+    console.error('Settings init failed: preload bridge unavailable');
+    return;
+  }
+  config = await window.electronAPI.getConfig();
+  selectedModel = config.model || 'auto';
+
+  document.getElementById('workerUrl').value = config.workerUrl || DEFAULT_WORKER_URL;
+  document.getElementById('apiKey').value = config.apiKey || '';
+  document.getElementById('captureDelay').value = config.captureDelay || 500;
+  document.getElementById('fontSize').value = config.fontSize || 14;
+  document.getElementById('overlayOpacity').value = config.overlayOpacity || 0.95;
+  document.getElementById('micLanguage').value = config.micLanguage || 'en';
+  document.getElementById('ocrLanguage').value = config.ocrLanguage || 'eng';
+  document.getElementById('micAutoSendDelay').value = config.micAutoSendDelay || 2000;
+  document.getElementById('micVadThreshold').value = config.micVadThreshold || 15;
+  document.getElementById('micGain').value = config.micGain || 1.5;
+  document.getElementById('resume').value = config.resume || '';
+  document.getElementById('jobDesc').value = config.jobDesc || '';
+  document.getElementById('targetName').value = config.targetName || '';
+  const participants = config.participants || [];
+  document.querySelectorAll('.participant-input').forEach((inp, i) => {
+    inp.value = participants[i] || '';
+  });
+  document.getElementById('focusMode').value = config.focusMode || 'all';
+
+  // Stealth controls
+  initStealthControls();
+
+  attachListeners();
+  updateSliderValues();
+  updateSteps();
+  enumerateMicDevices();
+  loadModels();
+}
+
+function updateSliderValues() {
+  document.getElementById('captureDelayVal').textContent = document.getElementById('captureDelay').value + 'ms';
+  document.getElementById('fontSizeVal').textContent = document.getElementById('fontSize').value + 'px';
+  document.getElementById('overlayOpacityVal').textContent = document.getElementById('overlayOpacity').value;
+  document.getElementById('micAutoSendDelayVal').textContent = document.getElementById('micAutoSendDelay').value + 'ms';
+  document.getElementById('micVadThresholdVal').textContent = document.getElementById('micVadThreshold').value;
+  document.getElementById('micGainVal').textContent = document.getElementById('micGain').value + 'x';
+}
+
+async function enumerateMicDevices() {
+  try {
+    const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    tempStream.getTracks().forEach(t => t.stop());
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const audioInputs = devices.filter(d => d.kind === 'audioinput');
+    const select = document.getElementById('micDevice');
+    select.innerHTML = '';
+    audioInputs.forEach((device, i) => {
+      const opt = document.createElement('option');
+      opt.value = device.deviceId;
+      opt.textContent = device.label || `Microphone ${i + 1}`;
+      if (device.deviceId === (config.micDevice || 'default')) opt.selected = true;
+      select.appendChild(opt);
+    });
+  } catch (e) {
+    console.log('Could not enumerate mic devices:', e.message);
+  }
+}
+
+// File upload handlers (plain-text files only)
+async function readTextFile(file) {
+  if (!/\.(txt|md|json|csv|log)$/i.test(file.name) && !String(file.type || '').startsWith('text')) {
+    throw new Error('Only plain-text files are supported (.txt, .md, .json, .csv)');
+  }
+  return await file.text();
+}
+
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.classList.remove('show');
+  void toast.offsetWidth;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2000);
+}
+
+async function handleResumeFileSelect(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    const text = await readTextFile(file);
+    document.getElementById('resumeFileName').textContent = file.name;
+    document.getElementById('resume').value = text;
+    await window.electronAPI.uploadResume({ fileData: text });
+    showToast('Resume uploaded!');
+    updateSteps();
+  } catch (e) {
+    showToast(e.message);
+  }
+}
+
+function uploadResumeFile() {
+  document.getElementById('resumeFile').click();
+}
+
+function clearResumeFile() {
+  document.getElementById('resumeFile').value = '';
+  document.getElementById('resumeFileName').textContent = 'No file chosen';
+  document.getElementById('resume').value = '';
+  window.electronAPI.uploadResume({ fileData: '' });
+  showToast('Resume cleared!');
+  updateSteps();
+}
+
+async function handleJobDescFileSelect(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    const text = await readTextFile(file);
+    document.getElementById('jobDescFileName').textContent = file.name;
+    document.getElementById('jobDesc').value = text;
+    await window.electronAPI.uploadJobDesc({ fileData: text });
+    showToast('Job description uploaded!');
+    updateSteps();
+  } catch (e) {
+    showToast(e.message);
+  }
+}
+
+function uploadJobDescFile() {
+  document.getElementById('jobDescFile').click();
+}
+
+function clearJobDescFile() {
+  document.getElementById('jobDescFile').value = '';
+  document.getElementById('jobDescFileName').textContent = 'No file chosen';
+  document.getElementById('jobDesc').value = '';
+  window.electronAPI.uploadJobDesc({ fileData: '' });
+  showToast('Job description cleared!');
+  updateSteps();
+}
+
+function attachListeners() {
+  // Credential input refreshes steps
+  ['workerUrl', 'apiKey'].forEach(id => {
+    document.getElementById(id).addEventListener('input', updateSteps);
+  });
+
+  // Key show/hide
+  document.getElementById('keyToggle').addEventListener('click', () => {
+    const inp = document.getElementById('apiKey');
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+  });
+
+  // Reload model list from worker
+  document.getElementById('reloadModelsBtn').addEventListener('click', loadModels);
+
+  // Guide toggle
+  document.getElementById('guideToggle').addEventListener('click', () => {
+    const body = document.getElementById('guideBody');
+    const arrow = document.getElementById('guideArrow');
+    body.classList.toggle('open');
+    arrow.classList.toggle('open');
+  });
+
+  // Profile toggle
+  document.getElementById('profileToggle').addEventListener('click', () => {
+    const body = document.getElementById('profileBody');
+    const arrow = document.getElementById('profileArrow');
+    body.classList.toggle('open');
+    arrow.classList.toggle('open');
+  });
+
+  // Advanced toggle
+  document.getElementById('advToggle').addEventListener('click', () => {
+    const body = document.getElementById('advBody');
+    const arrow = document.getElementById('advArrow');
+    body.classList.toggle('open');
+    arrow.classList.toggle('open');
+  });
+
+  // Sliders
+  document.querySelectorAll('input[type="range"]').forEach(s => {
+    s.addEventListener('input', updateSliderValues);
+  });
+
+  // Profile textareas refresh steps
+  ['resume', 'jobDesc'].forEach(id => {
+    document.getElementById(id).addEventListener('input', updateSteps);
+  });
+
+  // File upload event listeners
+  document.getElementById('resumeFile').addEventListener('change', handleResumeFileSelect);
+  document.getElementById('resumeUploadBtn').addEventListener('click', uploadResumeFile);
+  document.getElementById('resumeClearBtn').addEventListener('click', clearResumeFile);
+  document.getElementById('jobDescFile').addEventListener('change', handleJobDescFileSelect);
+  document.getElementById('jobDescUploadBtn').addEventListener('click', uploadJobDescFile);
+  document.getElementById('jobDescClearBtn').addEventListener('click', clearJobDescFile);
+
+  // Save
+  document.getElementById('saveBtn').addEventListener('click', async () => {
+    const customInput = document.getElementById('modelCustom');
+    let finalModel = (selectedModel === '__custom__') ? customInput.value.trim() : selectedModel;
+
+    let workerUrl = document.getElementById('workerUrl').value.trim();
+    if (workerUrl && !/^https?:\/\//i.test(workerUrl)) {
+      workerUrl = 'https://' + workerUrl;
+      document.getElementById('workerUrl').value = workerUrl;
+    }
+    if (!workerUrl) {
+      workerUrl = DEFAULT_WORKER_URL;
+      document.getElementById('workerUrl').value = workerUrl;
+    }
+    if (!finalModel) finalModel = 'auto';
+
+    const settings = {
+      workerUrl,
+      apiKey: document.getElementById('apiKey').value.trim(),
+      model: finalModel,
+      resume: document.getElementById('resume').value.trim(),
+      jobDesc: document.getElementById('jobDesc').value.trim(),
+      targetName: document.getElementById('targetName').value.trim(),
+      focusMode: document.getElementById('focusMode').value,
+      participants: Array.from(document.querySelectorAll('.participant-input')).map(i => i.value.trim()).filter(Boolean),
+      captureDelay: parseInt(document.getElementById('captureDelay').value),
+      fontSize: parseInt(document.getElementById('fontSize').value),
+      overlayOpacity: parseFloat(document.getElementById('overlayOpacity').value),
+      micDevice: document.getElementById('micDevice').value,
+      micLanguage: document.getElementById('micLanguage').value,
+      ocrLanguage: document.getElementById('ocrLanguage').value,
+      micAutoSendDelay: parseInt(document.getElementById('micAutoSendDelay').value),
+      micVadThreshold: parseInt(document.getElementById('micVadThreshold').value),
+      micGain: parseFloat(document.getElementById('micGain').value)
+    };
+    await window.electronAPI.saveConfig(settings);
+    Object.assign(config, settings);
+
+    const toast = document.getElementById('toast');
+    toast.textContent = 'Settings Saved!';
+    toast.classList.remove('show');
+    void toast.offsetWidth;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2000);
+  });
+
+  // Close button and Escape key close the settings view.
+  // When embedded in the main UI, notify the parent overlay instead of calling
+  // window.close() (which would close the whole app).
+  function closeSettings() {
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'close-settings' }, '*');
+        return;
+      }
+    } catch (e) {}
+    window.close();
+  }
+  document.getElementById('closeBtn').addEventListener('click', closeSettings);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeSettings();
+  });
+}
+
+// ── Stealth Controls ──
+function initStealthControls() {
+  // Opacity slider
+  const opacitySlider = document.getElementById('stealthOpacity');
+  const opacityVal = document.getElementById('stealthOpacityVal');
+  opacitySlider.value = config.overlayOpacity || 0.95;
+  opacityVal.textContent = opacitySlider.value;
+  opacitySlider.addEventListener('input', () => {
+    opacityVal.textContent = opacitySlider.value;
+    const val = parseFloat(opacitySlider.value);
+    window.electronAPI.setOverlayOpacity(val).catch(() => {});
+  });
+
+  // Click-through checkbox
+  const clickThrough = document.getElementById('stealthClickThrough');
+  clickThrough.addEventListener('change', () => {
+    window.electronAPI.setWindowClickThrough(clickThrough.checked).catch(() => {});
+  });
+
+  // Title rotation checkbox
+  const titleRotation = document.getElementById('stealthTitleRotation');
+  titleRotation.checked = true;
+
+  // Custom title input
+  const customTitle = document.getElementById('stealthCustomTitle');
+  customTitle.addEventListener('change', () => {
+    if (customTitle.value.trim()) {
+      window.electronAPI.setWindowTitle(customTitle.value.trim()).catch(() => {});
+    }
+  });
+
+  // Load stealth status
+  window.electronAPI.getStealthStatus().then(status => {
+    const el = document.getElementById('stealthStatus');
+    if (status) {
+      el.innerHTML = `
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <span>Anti-Capture: <b style="color:${status.antiCapture ? '#22c55e' : '#ef4444'}">${status.antiCapture ? 'Active' : 'N/A'}</b></span>
+          <span>Window Stealth: <b style="color:${status.windowStealth ? '#22c55e' : '#ef4444'}">${status.windowStealth ? 'Active' : 'N/A'}</b></span>
+          <span>Title Rotation: <b style="color:${status.titleRotation ? '#22c55e' : '#ef4444'}">${status.titleRotation ? 'Active' : 'Off'}</b></span>
+        </div>`;
+    }
+  }).catch(() => {});
+}
+
+init();
+</script>
+</body>
+</html>

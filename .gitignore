@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+.wrangler/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.local
+
+# Electron
+out/
+release/
+
+# Temporary files
+*.tmp
+*.temp
+
+# OCR training data (large binary)
+eng.traineddata
+
+# Claude config
+.claude/
+
+# Development screenshots
+screenshot*.png
+{screenshot,screenshot2,screenshot3,screenshot4,screenshot5,screenshot6,screenshot7,screenshot8,screenshot9,screenshot10,screenshot11,screenshot12,screenshot13,screenshot14}.png

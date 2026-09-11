@@ -1,0 +1,58 @@
+{
+  "name": "devops-ai-agent-desktop",
+  "version": "4.0.0",
+  "description": "AI Answer Agent - Live screen detection with invisible overlay",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win nsis",
+    "build:setup": "electron-builder --win nsis",
+    "build:dir": "electron-builder --win dir",
+    "build:portable": "electron-builder --win portable"
+  },
+  "author": "DevOps AI Agent",
+  "license": "MIT",
+  "dependencies": {
+    "koffi": "^3.1.5",
+    "tesseract.js": "^5.0.4"
+  },
+  "devDependencies": {
+    "app-builder-bin": "^5.0.0-alpha.10",
+    "electron": "34.5.8",
+    "electron-builder": "^25.0.0"
+  },
+  "electronVersion": "34.5.8",
+  "build": {
+    "appId": "com.devopsaiagent.desktop",
+    "productName": "DevOps AI Answer Agent",
+    "directories": {
+      "output": "release"
+    },
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DevOps AI Answer Agent",
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    },
+    "files": [
+      "src/**/*",
+      "renderer/**/*"
+    ]
+  }
+}

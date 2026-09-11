@@ -1,0 +1,27 @@
+{
+  "name": "devops-ai-agent-suite",
+  "version": "4.0.0",
+  "private": true,
+  "description": "DevOps AI Agent - Cloudflare Worker backend + Electron desktop client",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:worker": "npm run dev -w packages/worker",
+    "dev:desktop": "npm run start -w packages/desktop",
+    "build:worker": "npm run deploy -w packages/worker",
+    "build:desktop": "npm run build -w packages/desktop",
+    "install:all": "npm install"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "allowScripts": {
+    "electron@34.5.8": true,
+    "tesseract.js@5.1.1": true,
+    "koffi@3.1.6": true,
+    "esbuild@0.17.19": true,
+    "sharp@0.33.5": true,
+    "workerd@1.20250718.0": true
+  }
+}

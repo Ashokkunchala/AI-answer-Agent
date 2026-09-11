@@ -1,0 +1,48 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Answer Agent</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #ffffff;
+      --bg-card: rgba(35, 35, 60, 0.7);
+      --bg-input: rgba(25, 25, 45, 0.9);
+      --accent: #6C63FF;
+      --accent-hover: #7B73FF;
+      --text-primary: #000000;
+      --text-secondary: #9999BB;
+      --text-muted: #666688;
+      --success: #4ADE80;
+      --error: #F87171;
+      --border: rgba(255, 255, 255, 0.06);
+      --sidebar: #0d1117;
+      --accent2: #a78bfa;
+      --text2: #64748b;
+      --text: #e2e8f0;
+      --hover: #1a2332;
+    }
+    html, body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text-primary);
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: var(--bg);
+    }
+  </style>
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module" src="components-init.js"></script>
+</body>
+</html>

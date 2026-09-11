@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice Diagnostics</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #0a0c14; --card: #111827; --border: rgba(255,255,255,0.06);
+      --accent: #00e5ff; --accent2: #7c4dff; --text: #e0e8f0;
+      --dim: #6b7a8d; --muted: #3d4f63; --success: #00e676; --error: #ff5252; --warn: #ffab40;
+    }
+    body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 24px; }
+    h1 { font-size: 20px; margin-bottom: 20px; background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 900px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+    .card h3 { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--accent); }
+    .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .row label { font-size: 11px; color: var(--dim); min-width: 100px; }
+    .row .val { font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+    .row .val.ok { color: var(--success); }
+    .row .val.err { color: var(--error); }
+    .row .val.warn { color: var(--warn); }
+    select, input { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 12px; font-family: inherit; outline: none; }
+    select:focus, input:focus { border-color: var(--accent); }
+    button { padding: 8px 16px; border: none; border-radius: 8px; background: var(--accent); color: #000; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+    button:hover { opacity: 0.9; }
+    button.secondary { background: rgba(255,255,255,0.06); color: var(--text); }
+    button.danger { background: var(--error); }
+    .level-bar { width: 100%; height: 12px; background: rgba(255,255,255,0.04); border-radius: 6px; overflow: hidden; margin-top: 4px; }
+    .level-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 6px; transition: width 0.05s; }
+    canvas { width: 100%; height: 60px; border-radius: 8px; background: rgba(0,0,0,0.3); display: block; margin-top: 8px; }
+    .transcript-box { min-height: 60px; max-height: 120px; overflow-y: auto; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 8px; font-size: 12px; line-height: 1.5; margin-top: 8px; }
+    .transcript-box .final { color: var(--text); }
+    .transcript-box .interim { color: var(--dim); font-style: italic; }
+    .log-box { min-height: 80px; max-height: 150px; overflow-y: auto; padding: 8px; background: rgba(0,0,0,0.3); border-radius: 8px; font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.6; color: var(--dim); margin-top: 8px; }
+    .log-box .ts { color: var(--muted); }
+    .log-box .info { color: var(--accent); }
+    .log-box .err { color: var(--error); }
+    .log-box .ok { color: var(--success); }
+    .full { grid-column: 1 / -1; }
+  </style>
+</head>
+<body>
+  <h1>Voice Diagnostics Test Page</h1>
+  <div class="grid">
+    <!-- Microphone -->
+    <div class="card">
+      <h3>Microphone</h3>
+      <div class="row"><label>Device</label><span class="val" id="micDevice">--</span></div>
+      <div class="row"><label>Status</label><span class="val" id="micStatus">--</span></div>
+      <div class="row"><label>Sample Rate</label><span class="val" id="micRate">--</span></div>
+      <div class="row"><label>Volume</label></div>
+      <div class="level-bar"><div class="level-fill" id="levelFill"></div></div>
+      <canvas id="vizCanvas" width="400" height="60"></canvas>
+      <div style="margin-top:10px;display:flex;gap:8px;">
+        <select id="micSelect"><option value="default">System Default</option></select>
+        <button id="refreshBtn" class="secondary">Refresh</button>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px;">
+        <button id="startBtn">Start Mic</button>
+        <button id="stopBtn" class="danger" disabled>Stop</button>
+      </div>
+    </div>
+
+    <!-- VAD -->
+    <div class="card">
+      <h3>Voice Activity Detection</h3>
+      <div class="row"><label>State</label><span class="val" id="vadState">Idle</span></div>
+      <div class="row"><label>Threshold</label><span class="val" id="vadThreshold">0.015</span></div>
+      <div class="row"><label>Current Level</label><span class="val" id="vadLevel">0.000</span></div>
+      <div class="row"><label>Speech Duration</label><span class="val" id="vadDuration">--</span></div>
+      <div class="row"><label>Silence Duration</label><span class="val" id="vadSilence">--</span></div>
+      <div class="row"><label>Speech Events</label><span class="val" id="vadEvents">0</span></div>
+    </div>
+
+    <!-- Transcript -->
+    <div class="card">
+      <h3>Live Transcript</h3>
+      <div class="row"><label>STT Provider</label><span class="val" id="sttProvider">--</span></div>
+      <div class="row"><label>Connection</label><span class="val" id="sttConn">--</span></div>
+      <div class="row"><label>Latency (first)</label><span class="val" id="sttLatency">--</span></div>
+      <div class="transcript-box" id="transcriptBox"><span style="color:var(--muted)">Start mic to see transcript...</span></div>
+    </div>
+
+    <!-- Connection -->
+    <div class="card">
+      <h3>Connection & Latency</h3>
+      <div class="row"><label>STT Connection</label><span class="val" id="connStatus">--</span></div>
+      <div class="row"><label>Mic Connect</label><span class="val" id="latMic">--</span></div>
+      <div class="row"><label>STT Connect</label><span class="val" id="latStt">--</span></div>
+      <div class="row"><label>First Partial</label><span class="val" id="latPartial">--</span></div>
+      <div class="row"><label>First Final</label><span class="val" id="latFinal">--</span></div>
+      <div class="row"><label>Total Session</label><span class="val" id="latTotal">--</span></div>
+    </div>
+
+    <!-- Errors -->
+    <div class="card full">
+      <h3>Event Log</h3>
+      <div class="log-box" id="logBox"><span class="ts">Ready. Click "Start Mic" to begin.</span></div>
+    </div>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+let micStream = null, audioCtx = null, analyser = null, animFrame = null;
+let recognition = null, isListening = false;
+let vadInterval = null, speechStart = 0, silenceStart = 0, speaking = false, speechEvents = 0;
+let finalTranscript = '', interimTranscript = '';
+let sessionStart = 0, firstPartialTime = 0, firstFinalTime = 0;
+
+function log(msg, cls = '') {
+  const box = $('logBox');
+  const ts = new Date().toLocaleTimeString();
+  box.innerHTML += `<div><span class="ts">[${ts}]</span> <span class="${cls}">${msg}</span></div>`;
+  box.scrollTop = box.scrollHeight;
+}
+
+async function enumerateDevices() {
+  try {
+    const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    tempStream.getTracks().forEach(t => t.stop());
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const sel = $('micSelect');
+    sel.innerHTML = '';
+    devices.filter(d => d.kind === 'audioinput').forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Mic ${i + 1}`;
+      sel.appendChild(opt);
+    });
+  } catch (e) {
+    log('Cannot enumerate: ' + e.message, 'err');
+  }
+}
+
+async function startMic() {
+  if (isListening) return;
+  sessionStart = Date.now();
+  firstPartialTime = 0;
+  firstFinalTime = 0;
+  finalTranscript = '';
+  interimTranscript = '';
+  speechEvents = 0;
+
+  const deviceId = $('micSelect').value;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000, channelCount: 1, deviceId: deviceId !== 'default' ? { exact: deviceId } : undefined }
+    });
+
+    const track = micStream.getAudioTracks()[0];
+    $('micDevice').textContent = track.label || 'Unknown';
+    $('micStatus').textContent = 'Active';
+    $('micStatus').className = 'val ok';
+    $('startBtn').disabled = true;
+    $('stopBtn').disabled = false;
+    log('Mic started: ' + track.label, 'ok');
+
+    // Audio context
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000, latencyHint: 'interactive' });
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    $('micRate').textContent = audioCtx.sampleRate + ' Hz';
+
+    const source = audioCtx.createMediaStreamSource(micStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.7;
+    source.connect(analyser);
+
+    isListening = true;
+    drawViz();
+    startVAD();
+    startSTT();
+  } catch (e) {
+    log('Mic error: ' + e.message, 'err');
+    $('micStatus').textContent = 'Error: ' + e.message;
+    $('micStatus').className = 'val err';
+  }
+}
+
+function stopMic() {
+  isListening = false;
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (audioCtx && audioCtx.state !== 'closed') { audioCtx.close(); audioCtx = null; }
+  if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
+  if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
+  if (recognition) { try { recognition.onend = null; recognition.stop(); } catch(e) {} recognition = null; }
+  analyser = null;
+  $('micStatus').textContent = 'Stopped';
+  $('micStatus').className = 'val';
+  $('startBtn').disabled = false;
+  $('stopBtn').disabled = true;
+  $('levelFill').style.width = '0%';
+  $('vadState').textContent = 'Idle';
+  $('vadState').className = 'val';
+  log('Mic stopped', 'info');
+}
+
+function drawViz() {
+  if (!isListening || !analyser) return;
+  animFrame = requestAnimationFrame(draw);
+  const canvas = $('vizCanvas');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(buf);
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const count = 48;
+  const gap = 2;
+  const bw = (w - (count - 1) * gap) / count;
+  for (let i = 0; i < count; i++) {
+    const idx = Math.floor(i * buf.length / count);
+    const v = buf[idx] / 255;
+    const bh = v * h * 0.9;
+    const x = i * (bw + gap), y = (h - bh) / 2;
+    const hue = 180 + v * 60;
+    ctx.fillStyle = `hsla(${hue},100%,60%,${0.4 + v * 0.6})`;
+    ctx.shadowColor = 'rgba(0,229,255,0.4)';
+    ctx.shadowBlur = v * 6;
+    ctx.beginPath();
+    ctx.roundRect(x, y, bw, bh, 3);
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+}
+
+function startVAD() {
+  const threshold = 0.015;
+  $('vadThreshold').textContent = threshold;
+  vadInterval = setInterval(() => {
+    if (!isListening || !analyser) return;
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i];
+    const level = sum / buf.length / 255;
+    $('levelFill').style.width = (level * 300) + '%';
+    $('vadLevel').textContent = level.toFixed(3);
+
+    const now = Date.now();
+    if (level > threshold) {
+      if (!speaking) { speaking = true; speechStart = now; speechEvents++; $('vadEvents').textContent = speechEvents; }
+      silenceStart = 0;
+      $('vadState').textContent = 'Speaking';
+      $('vadState').className = 'val ok';
+    } else if (speaking) {
+      if (silenceStart === 0) silenceStart = now;
+      $('vadState').textContent = 'Silent';
+      $('vadState').className = 'val warn';
+    }
+    if (speaking && speechStart) $('vadDuration').textContent = ((now - speechStart) / 1000).toFixed(1) + 's';
+    if (silenceStart) $('vadSilence').textContent = ((now - silenceStart) / 1000).toFixed(1) + 's';
+  }, 50);
+}
+
+function startSTT() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    $('sttProvider').textContent = 'Not Supported';
+    $('sttConn').textContent = 'Unavailable';
+    $('sttConn').className = 'val err';
+    log('Web Speech API not available', 'err');
+    return;
+  }
+
+  $('sttProvider').textContent = 'Browser (Web Speech API)';
+  $('connStatus').textContent = 'Connected';
+  $('connStatus').className = 'val ok';
+
+  recognition = new SR();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+
+  recognition.onstart = () => {
+    $('sttConn').textContent = 'Connected';
+    $('sttConn').className = 'val ok';
+    log('STT connected', 'ok');
+  };
+
+  recognition.onresult = (event) => {
+    let interim = '', fin = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const r = event.results[i];
+      if (r.isFinal) fin += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    if (fin.trim()) {
+      finalTranscript += fin.trim() + ' ';
+      if (!firstFinalTime) { firstFinalTime = Date.now() - sessionStart; $('latFinal').textContent = firstFinalTime + 'ms'; }
+      log('Final: ' + fin.trim(), 'ok');
+    }
+    if (interim.trim()) {
+      if (!firstPartialTime) { firstPartialTime = Date.now() - sessionStart; $('latPartial').textContent = firstPartialTime + 'ms'; }
+    }
+    interimTranscript = interim;
+    updateTranscript();
+  };
+
+  recognition.onerror = (e) => {
+    if (e.error !== 'no-speech') log('STT error: ' + e.error, 'err');
+  };
+
+  recognition.onend = () => {
+    if (isListening && recognition) { try { recognition.start(); } catch(e) {} }
+  };
+
+  recognition.start();
+  $('latMic').textContent = (Date.now() - sessionStart) + 'ms';
+  $('latStt').textContent = (Date.now() - sessionStart) + 'ms';
+}
+
+function updateTranscript() {
+  const box = $('transcriptBox');
+  let html = '';
+  if (finalTranscript) html += `<span class="final">${escapeHTML(finalTranscript)}</span>`;
+  if (interimTranscript) html += `<span class="interim">${escapeHTML(interimTranscript)}</span>`;
+  box.innerHTML = html || '<span style="color:var(--muted)">Listening...</span>';
+  box.scrollTop = box.scrollHeight;
+}
+
+function escapeHTML(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+$('startBtn').addEventListener('click', startMic);
+$('stopBtn').addEventListener('click', stopMic);
+$('refreshBtn').addEventListener('click', enumerateDevices);
+enumerateDevices();
+</script>
+</body>
+</html>

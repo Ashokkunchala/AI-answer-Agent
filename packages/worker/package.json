@@ -1,0 +1,15 @@
+{
+  "name": "devops-ai-agent-worker",
+  "version": "4.0.0",
+  "description": "Cloudflare Worker - DevOps AI Agent with smart routing and model fallback",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3.114.0"
+  }
+}
