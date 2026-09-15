@@ -8,6 +8,17 @@ import { concatenateChunks, base64ToBytes, jsonResponse } from '../../../../shar
 // In-memory audio buffer per session
 const sessions = new Map();
 
+// A session that never receives its 'end' control message would otherwise leak
+// forever in the module map; expire idle sessions so memory stays flat.
+const SESSION_TTL_MS = 5 * 60 * 1000;
+const MAX_SESSION_BYTES = 25 * 1024 * 1024;
+
+function sweepSessions(now = Date.now()) {
+  for (const [id, s] of sessions) {
+    if (now - (s.lastAt || s.startTime) > SESSION_TTL_MS) sessions.delete(id);
+  }
+}
+
 /**
  * Handle a streaming STT request
  * Accepts chunks of audio data and returns transcription results
@@ -21,10 +32,12 @@ export async function handleSTTStream(request, env) {
 
     // Control messages
     if (body.type === 'start') {
+      sweepSessions();
       const sessionId = crypto.randomUUID();
       sessions.set(sessionId, {
         chunks: [],
         startTime: Date.now(),
+        lastAt: Date.now(),
         model: body.model || 'auto',
         language: body.language || 'en',
       });
@@ -32,6 +45,7 @@ export async function handleSTTStream(request, env) {
     }
 
     if (body.type === 'end' && body.session_id) {
+      sweepSessions();
       const session = sessions.get(body.session_id);
       if (!session) return jsonResponse({ error: 'Session not found' }, 404);
 
@@ -58,12 +72,19 @@ export async function handleSTTStream(request, env) {
 
     // Audio chunk (base64)
     if (body.audio) {
+      sweepSessions();
       const sessionId = body.session_id;
       const session = sessions.get(sessionId);
       if (!session) return jsonResponse({ error: 'Session not found' }, 404);
 
       const bytes = base64ToBytes(body.audio);
       session.chunks.push(bytes);
+      session.lastAt = Date.now();
+
+      if (session.chunks.reduce((a, c) => a + c.byteLength, 0) > MAX_SESSION_BYTES) {
+        sessions.delete(sessionId);
+        return jsonResponse({ error: 'Session exceeded max audio size' }, 413);
+      }
 
       return jsonResponse({ received: bytes.byteLength, total_chunks: session.chunks.length });
     }

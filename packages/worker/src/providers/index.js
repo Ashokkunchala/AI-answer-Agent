@@ -48,6 +48,12 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
   const modelId = modelConfig.id;
   const caps = modelConfig.caps || [];
 
+  // Google (Gemini) run-catalog models use a native contents/systemInstruction
+  // wire format — dispatch them before the generic paths.
+  if (modelConfig.wire === 'gemini') {
+    return callGeminiAI(modelKey, messages, options, env, modelId);
+  }
+
   // ── Image generation ──
   if (caps.includes('image')) {
     const prompt = lastUserText(messages);
@@ -231,4 +237,109 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
     modelId,
     usage: result.usage || null,
   };
+}
+
+// ── Google (Gemini) native wire format via env.AI.run ──
+// Gemini catalog models expect `contents` (+ `systemInstruction`) and return
+// `candidates[].content.parts[]`, not OpenAI-style messages/choices. Outputs
+// are normalized to the same {type:'text'|'stream'} shape the router expects.
+async function callGeminiAI(modelKey, messages, options, env, modelId) {
+  if (!env.AI) throw new Error('Cloudflare AI binding not available for Gemini.');
+
+  const systemParts = [];
+  const contents = [];
+  for (const m of messages || []) {
+    const text = contentToText(m.content);
+    if (!text) continue;
+    if (m.role === 'system') {
+      systemParts.push(text);
+    } else {
+      contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text }] });
+    }
+  }
+  if (!contents.length) throw new Error('"messages" must contain a user/assistant message');
+
+  const payload = { contents };
+  if (systemParts.length) payload.systemInstruction = { parts: systemParts.map((text) => ({ text })) };
+  const generationConfig = {};
+  if (options.temperature !== undefined && options.temperature !== 0) generationConfig.temperature = options.temperature;
+  if (options.top_p !== undefined) generationConfig.topP = options.top_p;
+  const maxOutputTokens = options.max_tokens || 2048;
+  if (maxOutputTokens > 0) generationConfig.maxOutputTokens = maxOutputTokens;
+  if (Object.keys(generationConfig).length) payload.generationConfig = generationConfig;
+
+  if (options.stream) {
+    let response = null;
+    try {
+      response = await env.AI.run(modelId, { ...payload, stream: true });
+    } catch (_) {
+      response = null; // model/binding without streaming — fall back below
+    }
+    if (response && typeof response.getReader === 'function') {
+      // Streaming SSE from the binding (normalized chunks); yield deltas.
+      const reader = response.getReader();
+      const textDecoder = new TextDecoder();
+      const asyncIterable = {
+        async *[Symbol.asyncIterator]() {
+          let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += textDecoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data: ')) continue;
+              const jsonStr = trimmed.slice(6);
+              if (jsonStr === '[DONE]') return;
+              try {
+                const j = JSON.parse(jsonStr);
+                const text = j.response || j.text || j.content || j.choices?.[0]?.delta?.content || '';
+                if (text) yield { response: text };
+              } catch {}
+            }
+          }
+        },
+      };
+      return { type: 'stream', stream: asyncIterable, provider: 'cloudflare', model: modelKey, modelId };
+    }
+    // No native streaming: emit the assembled answer as one stream chunk so the
+    // router/SSE contract still holds (latency reporting reflects actual
+    // generation, not a fabricated token stream).
+    const text = await geminiText(env, modelId, payload);
+    return {
+      type: 'stream',
+      stream: (async function* () { if (text) yield { response: text }; })(),
+      provider: 'cloudflare',
+      model: modelKey,
+      modelId,
+      stream_fallback: true,
+    };
+  }
+
+  const text = await geminiText(env, modelId, payload);
+  return {
+    type: 'text',
+    content: text,
+    provider: 'cloudflare',
+    model: modelKey,
+    modelId,
+    usage: null,
+  };
+}
+
+async function geminiText(env, modelId, payload) {
+  const result = await env.AI.run(modelId, payload);
+  if (typeof result === 'string') {
+    try { return JSON.parse(result).candidates?.[0]?.content?.parts?.map((p) => p.text).join('') || result; }
+    catch (_) { return result; }
+  }
+  if (result.candidates?.[0]?.content?.parts?.length) {
+    return result.candidates[0].content.parts.map((p) => p.text || '').join('');
+  }
+  if (result.text) return result.text;
+  if (result.response) return result.response;
+  if (result.choices?.[0]?.message?.content) return result.choices[0].message.content;
+  return JSON.stringify(result);
 }

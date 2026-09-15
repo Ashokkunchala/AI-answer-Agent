@@ -8,6 +8,10 @@ export const MODELS = {
   // Billed via AI Gateway unified billing (promo pricing on gpt-5.6-sol).
   'gpt-5.6-sol': { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', params: 'sol', context: 128000, max_tokens: 16384, speed: 'medium', caps: ['tools','reasoning','streaming'], bestFor: ['deep_reasoning','review','code_gen','debug','general'], provider: 'gateway' },
 
+  // GOOGLE VIA WORKERS AI (auto-routed through AI Gateway by slug)
+  'gemini-3.1-flash-lite': { id: 'google/gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', context: 1000000, max_tokens: 8192, speed: 'fast', caps: ['streaming'], wire: 'gemini', bestFor: ['interview','quick_qa','general','explain'] },
+  'google/gemini-3.1-flash-lite': { id: 'google/gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', context: 1000000, max_tokens: 8192, speed: 'fast', caps: ['streaming'], wire: 'gemini', bestFor: ['interview','quick_qa','general','explain'] },
+
   // FLAGSHIP TEXT (Best Quality)
   'gpt-oss-120b': { id: '@cf/openai/gpt-oss-120b', name: 'GPT OSS 120B', params: '120B', context: 128000, max_tokens: 16384, speed: 'medium', caps: ['tools','reasoning','streaming'], bestFor: ['deep_reasoning','debug','review','explain'] },
   'gpt-oss-20b': { id: '@cf/openai/gpt-oss-20b', name: 'GPT OSS 20B', params: '20B', context: 128000, max_tokens: 16384, speed: 'fast', caps: ['tools','reasoning','streaming'], bestFor: ['quick_qa','general','explain'] },
@@ -150,7 +154,8 @@ export const ROUTING_TABLE = {
   interview: {
     label: 'Interview Mode',
     chains: [
-      { model: 'llama-3.3-70b', reason: 'conversational + fast' },
+      { model: 'gemini-3.1-flash-lite', reason: 'fast + low latency for live voice' },
+      { model: 'llama-3.3-70b', reason: 'conversational + fast fallback' },
       { model: 'gpt-oss-20b', reason: 'balanced quality' },
       { model: 'gemma-4-26b', reason: 'knowledgeable' },
       { model: 'mistral-small-24b', reason: 'fast + multilingual' },

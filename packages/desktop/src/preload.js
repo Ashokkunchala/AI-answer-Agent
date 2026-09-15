@@ -139,6 +139,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getScreenInfo: () => ipcRenderer.invoke('get-screen-info'),
   transcribeAudio: (data) => ipcRenderer.invoke('transcribe-audio', data),
   getAudioSources: () => ipcRenderer.invoke('get-audio-sources'),
+  getAudioEngineSources: () => ipcRenderer.invoke('get-audio-engine-sources'),
+  startAudioEngine: (opts) => ipcRenderer.invoke('start-audio-engine', opts),
+  stopAudioEngine: () => ipcRenderer.invoke('stop-audio-engine'),
+  getAudioEngineStatus: () => ipcRenderer.invoke('get-audio-engine-status'),
+  onAudioEngineFrame: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('audio-engine-frame', listener);
+    return () => ipcRenderer.removeListener('audio-engine-frame', listener);
+  },
+  onAudioEngineEvent: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('audio-engine-event', listener);
+    return () => ipcRenderer.removeListener('audio-engine-event', listener);
+  },
   saveSnippet: (data) => ipcRenderer.invoke('save-snippet', data),
   loadSnippets: () => ipcRenderer.invoke('load-snippets'),
   deleteSnippet: (data) => ipcRenderer.invoke('delete-snippet', data),

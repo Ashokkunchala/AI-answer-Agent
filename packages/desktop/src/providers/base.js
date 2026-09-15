@@ -17,6 +17,7 @@ export class SpeechToTextProvider {
   async sendAudio(audioData) { throw new Error('Not implemented'); }
 
   // Events
+  on(event, callback) { this._on(event, callback); }
   onPartialTranscript(callback) { this._on('partial', callback); }
   onFinalTranscript(callback) { this._on('final', callback); }
   onError(callback) { this._on('error', callback); }

@@ -19,9 +19,9 @@
   "allowScripts": {
     "electron@34.5.8": true,
     "tesseract.js@5.1.1": true,
-    "koffi@3.1.6": true,
     "esbuild@0.17.19": true,
     "sharp@0.33.5": true,
-    "workerd@1.20250718.0": true
+    "workerd@1.20250718.0": true,
+    "koffi@3.3.0": true
   }
 }

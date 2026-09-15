@@ -1,10 +1,12 @@
 // STT Provider Registry
 // Export all available providers
 
-export { SpeechToTextProvider } from './base.js';
-export { DeepgramProvider } from './deepgram.js';
-export { BrowserProvider } from './browser.js';
-export { WhisperProvider } from './whisper.js';
+import { SpeechToTextProvider } from './base.js';
+import { DeepgramProvider } from './deepgram.js';
+import { BrowserProvider } from './browser.js';
+import { WhisperProvider } from './whisper.js';
+
+export { SpeechToTextProvider, DeepgramProvider, BrowserProvider, WhisperProvider };
 
 // Provider factory
 export function createProvider(type, config) {

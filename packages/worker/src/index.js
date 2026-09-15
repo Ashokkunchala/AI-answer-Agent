@@ -9,6 +9,7 @@ import {
 } from './auth.js';
 import { DASHBOARD_HTML } from './dashboard.js';
 import { transcribe, extractAudioFromJSON } from './providers/transcription.js';
+import { handleSTTStream } from './providers/stt-stream.js';
 import { concatenateChunks, base64ToBytes, jsonResponse } from '../../../shared/utils.js';
 
 const PUBLIC_PATHS = ['/', '/health', '/v1/models', '/v1/tasks'];
@@ -63,6 +64,33 @@ async function readTranscriptionInput(request) {
   }
 }
 
+// POST /v1/audio/transcriptions — OpenAI-compatible speech-to-text.
+// Accepts multipart/form-data (real audio file) or JSON (base64 in "file"/"audio").
+async function handleTranscription(request, env) {
+  const { bytes, mime, model, language, prompt, temperature } = await readTranscriptionInput(request);
+
+  if (!bytes || bytes.byteLength === 0) {
+    return jsonResponse({ error: 'No audio data provided.' }, 400, request);
+  }
+  if (bytes.byteLength > 25 * 1024 * 1024) {
+    return jsonResponse({ error: 'Audio too large (max 25MB)' }, 413, request);
+  }
+
+  const result = await transcribe(env, bytes, {
+    model: model || 'auto',
+    language: language || 'en',
+    prompt: prompt || undefined,
+    temperature: temperature ?? 0,
+  }, mime || 'audio/webm');
+
+  return jsonResponse({
+    text: result.text,
+    model: result.model,
+    segments: result.segments || [],
+    attempts: result.attempts || [],
+  }, 200, request);
+}
+
 // Auth middleware â€” returns null if allowed, or a Response if denied.
 // Direct-use mode: requests WITHOUT an API key run as the shared anonymous identity.
 // Rate limiting is disabled (unlimited requests).
@@ -90,6 +118,8 @@ async function authenticate(request, env, path) {
 async function handleVoiceSocket(webSocket, env) {
   // In-memory audio buffer per session (keyed by webSocket)
   const sessions = new Map();
+  // Cap buffered audio so an abandoned/never-ended session can't balloon RAM.
+  const MAX_SESSION_BYTES = 25 * 1024 * 1024;
 
   webSocket.addEventListener('message', async (event) => {
     try {
@@ -101,6 +131,7 @@ async function handleVoiceSocket(webSocket, env) {
         sessions.set(webSocket, {
           chunks: [],
           startTime: Date.now(),
+          lastAt: Date.now(),
           model: data.model || 'auto',
           language: data.language || 'en',
         });
@@ -154,6 +185,13 @@ async function handleVoiceSocket(webSocket, env) {
         }
 
         session.chunks.push(audioBytes);
+        session.lastAt = Date.now();
+
+        if (session.chunks.reduce((a, c) => a + c.byteLength, 0) > MAX_SESSION_BYTES) {
+          sessions.delete(webSocket);
+          webSocket.send(JSON.stringify({ error: 'Session exceeded max audio size, call end' }));
+          return;
+        }
 
         // Transcribe this chunk alone to get a partial
         const partialResult = await transcribe(env, audioBytes, {
@@ -294,14 +332,20 @@ export default {
         });
       }
 
-      // â”€â”€â”€ List API keys â”€â”€â”€
+      // List API keys (requires auth)
       if (path === '/v1/keys' && request.method === 'GET') {
+        if (!request._keyData || request._keyData.id === 'anon') {
+          return jsonResponse({ error: 'Authentication required to list keys' }, 401, request);
+        }
         const keys = await listApiKeys(env);
         return jsonResponse({ keys });
       }
 
-      // â”€â”€â”€ Revoke API key â”€â”€â”€
+      // Revoke API key (requires auth)
       if (path === '/v1/keys/revoke' && request.method === 'POST') {
+        if (!request._keyData || request._keyData.id === 'anon') {
+          return jsonResponse({ error: 'Authentication required to revoke keys' }, 401, request);
+        }
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
 
@@ -309,8 +353,11 @@ export default {
         return jsonResponse(result, result.success ? 200 : 404, request);
       }
 
-      // â”€â”€â”€ Delete API key â”€â”€â”€
+      // Delete API key (requires auth)
       if (path === '/v1/keys' && request.method === 'DELETE') {
+        if (!request._keyData || request._keyData.id === 'anon') {
+          return jsonResponse({ error: 'Authentication required to delete keys' }, 401, request);
+        }
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
 
@@ -371,73 +418,7 @@ export default {
       if (path === '/v1/chat/completions' && request.method === 'POST') {
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
-
-        let result;
-        try {
-          result = await routeRequest(body, env);
-        } catch (e) {
-          if (e.status) return jsonResponse({ error: e.message }, e.status, request);
-          throw e;
-        }
-        const { response, metadata } = result;
-
-        // Track usage without blocking the response
-        if (ctx) {
-          ctx.waitUntil(trackUsage(request._keyData.id, env, {
-            tokens: response.usage?.total_tokens || 0,
-            model: metadata.model_used,
-          }));
-        }
-
-        // Streaming
-        if (response.type === 'stream') {
-          const completionId = `chatcmpl-${crypto.randomUUID()}`;
-          const { readable, writable } = new TransformStream();
-          const writer = writable.getWriter();
-          const encoder = new TextEncoder();
-
-          const pump = async () => {
-            try {
-              for await (const chunk of response.stream) {
-                const text = chunk.response || chunk.text || chunk.content || '';
-                if (text) {
-                  await writer.write(encoder.encode(`data: ${JSON.stringify({
-                    id: completionId,
-                    object: 'chat.completion.chunk',
-                    model: metadata.model_used,
-                    task_type: metadata.task_type,
-                    choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-                  })}\n\n`));
-                }
-              }
-              await writer.write(encoder.encode(`data: ${JSON.stringify({
-                id: completionId,
-                object: 'chat.completion.chunk',
-                model: metadata.model_used,
-                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-              })}\n\n`));
-              await writer.write(encoder.encode('data: [DONE]\n\n'));
-            } catch (e) {
-              await writer.write(encoder.encode(`data: ${JSON.stringify({ error: e.message })}\n\n`));
-            } finally {
-              await writer.close();
-            }
-          };
-
-          if (ctx) ctx.waitUntil(pump());
-          else pump();
-
-          return new Response(readable, {
-            headers: {
-              'Content-Type': 'text/event-stream',
-              'Cache-Control': 'no-cache',
-              ...corsHeaders(request),
-            },
-          });
-        }
-
-        // Non-streaming
-        return buildChatResponse(response, metadata, request);
+        return respondToChat(body, env, ctx, request, null);
       }
 
       // â”€â”€â”€ Simple ask â”€â”€â”€
@@ -482,6 +463,39 @@ export default {
         return jsonResponse(reply, 200, request);
       }
 
+      // ── Realtime voice interview answer (sessionId/turnId aware) ──
+      if (path === '/api/answer' && request.method === 'POST') {
+        const body = await readBody(request);
+        if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
+
+        const question = body.question || body.q || '';
+        if (!question) return jsonResponse({ error: 'Provide a "question" field' }, 400, request);
+
+        const messages = [];
+        if (body.conversationContext) messages.push({ role: 'system', content: String(body.conversationContext) });
+        if (Array.isArray(body.history)) {
+          messages.push(...body.history.slice(0, 12).filter((m) => m && m.role && m.content));
+        }
+        messages.push({ role: 'user', content: question });
+
+        const chatBody = {
+          model: body.model || 'auto', // auto lets the router chain skip failing models gracefully
+          messages,
+          max_tokens: body.max_tokens || 512,
+          temperature: body.temperature ?? 0.3,
+          stream: body.stream !== false,
+          task_type: 'interview',
+          resume: body.resume,
+          jobDesc: body.jobDesc,
+          targetName: body.targetName,
+          participants: body.participants,
+        };
+        return respondToChat(chatBody, env, ctx, request, {
+          sessionId: body.sessionId || null,
+          turnId: body.turnId || null,
+        });
+      }
+
       // â”€â”€â”€ 404 â”€â”€â”€
       return jsonResponse({
         error: 'Not found',
@@ -498,6 +512,7 @@ export default {
           'GET /v1/usage': 'Usage stats',
           'POST /v1/route': 'Preview routing',
           'POST /v1/chat/completions': 'OpenAI-compatible chat',
+          'POST /api/answer': 'Realtime voice answer (sessionId/turnId)',
           'POST /v1/audio/transcriptions': 'Speech-to-text (multipart or base64 JSON)',
           'POST /ask': 'Simple Q&A',
         },
@@ -562,5 +577,90 @@ function buildChatResponse(response, metadata, request) {
   if (response.type === 'embeddings') base.embedding_data = response.data;
 
   return jsonResponse(base, 200, request);
+}
+
+// Shared chat handler for both /v1/chat/completions and /api/answer.
+// `meta` optionally carries { sessionId, turnId } echoed into each SSE chunk so
+// realtime consumers can correlate answers to turn ids.
+async function respondToChat(body, env, ctx, request, meta) {
+  let result;
+  try {
+    result = await routeRequest(body, env);
+  } catch (e) {
+    // Always surface a JSON error (never a platform HTML 500) so streaming
+    // clients can see the routing failures and self-heal (e.g. skip a model).
+    const routing = e.attempts ? { attempts: e.attempts } : undefined;
+    return jsonResponse({ error: e.message, ...(routing ? { routing } : {}) }, e.status || 500, request);
+  }
+  const { response, metadata } = result;
+
+  // Track usage without blocking the response (usage tracking must never
+  // jeopardize the request, so failures are swallowed).
+  if (ctx) {
+    ctx.waitUntil(Promise.resolve(trackUsage(request._keyData.id, env, {
+      tokens: response.usage?.total_tokens || 0,
+      model: metadata.model_used,
+    })).catch((err) => console.log('[Usage] tracking error:', err.message)));
+  }
+
+  // Streaming
+  if (response.type === 'stream') {
+    return streamChatResponse(response, metadata, request, meta, ctx);
+  }
+
+  // Non-streaming
+  return buildChatResponse(response, metadata, request);
+}
+
+function streamChatResponse(response, metadata, request, meta, ctx) {
+  const completionId = `chatcmpl-${crypto.randomUUID()}`;
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+
+  const pump = async () => {
+    try {
+      for await (const chunk of response.stream) {
+        const text = chunk.response || chunk.text || chunk.content || '';
+        if (text) {
+          const payload = {
+            id: completionId,
+            object: 'chat.completion.chunk',
+            model: metadata.model_used,
+            task_type: metadata.task_type,
+            choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+          };
+          if (meta && meta.sessionId) payload.session_id = meta.sessionId;
+          if (meta && meta.turnId) payload.turn_id = meta.turnId;
+          await writer.write(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+        }
+      }
+      const finish = {
+        id: completionId,
+        object: 'chat.completion.chunk',
+        model: metadata.model_used,
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      };
+      if (meta && meta.sessionId) finish.session_id = meta.sessionId;
+      if (meta && meta.turnId) finish.turn_id = meta.turnId;
+      await writer.write(encoder.encode(`data: ${JSON.stringify(finish)}\n\n`));
+      await writer.write(encoder.encode('data: [DONE]\n\n'));
+    } catch (e) {
+      await writer.write(encoder.encode(`data: ${JSON.stringify({ error: e.message })}\n\n`));
+    } finally {
+      await writer.close();
+    }
+  };
+
+  if (ctx) ctx.waitUntil(pump());
+  else pump();
+
+  return new Response(readable, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      ...corsHeaders(request),
+    },
+  });
 }
 

@@ -8,13 +8,17 @@
     "build": "electron-builder --win nsis",
     "build:setup": "electron-builder --win nsis",
     "build:dir": "electron-builder --win dir",
-    "build:portable": "electron-builder --win portable"
+    "build:portable": "electron-builder --win portable",
+    "test:voice": "node --test --test-reporter=spec \"src/voice/tests/*.test.js\"",
+    "benchmark": "node src/voice/cli-benchmark.js"
   },
   "author": "DevOps AI Agent",
   "license": "MIT",
   "dependencies": {
     "koffi": "^3.1.5",
-    "tesseract.js": "^5.0.4"
+    "loopback-capture": "^3.0.2",
+    "tesseract.js": "^5.0.4",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "app-builder-bin": "^5.0.0-alpha.10",

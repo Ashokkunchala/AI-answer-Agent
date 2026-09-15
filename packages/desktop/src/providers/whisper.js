@@ -11,6 +11,7 @@ export class WhisperProvider extends SpeechToTextProvider {
     this.apiKey = config.apiKey || '';
     this.model = config.model || 'whisper-large-v3';
     this.language = config.language || 'en';
+    this.sampleRate = config.sampleRate || 48000;
     this._destroyed = false;
     this._connected = false;
     this._audioBuffer = [];
@@ -27,14 +28,21 @@ export class WhisperProvider extends SpeechToTextProvider {
     if (this._destroyed) throw new Error('Provider destroyed');
     if (!this.workerUrl) throw new Error('Worker URL required for Whisper provider');
 
-    // Verify the endpoint is reachable
+    console.log('[WhisperProvider] Connecting to worker:', this.workerUrl);
+    
+    // Verify the endpoint is reachable with short timeout
     try {
       const res = await fetch(this.workerUrl.replace(/\/+$/, '') + '/health', {
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(3000)
       });
       if (!res.ok) throw new Error(`Worker health check failed: ${res.status}`);
+      console.log('[WhisperProvider] Worker health check passed');
     } catch (e) {
-      throw new Error(`Cannot reach worker: ${e.message}`);
+      const msg = e.name === 'TimeoutError' 
+        ? `Worker at ${this.workerUrl} is not responding (timeout)`
+        : `Cannot reach worker at ${this.workerUrl}: ${e.message}`;
+      console.error('[WhisperProvider]', msg);
+      throw new Error(msg);
     }
 
     this._connected = true;
@@ -98,8 +106,10 @@ export class WhisperProvider extends SpeechToTextProvider {
         return;
       }
 
-      // Convert to base64
-      const base64 = this._arrayBufferToBase64(merged.buffer);
+      // Convert to base64 (real WAV container — raw PCM labeled audio/webm
+      // has never decoded in Whisper).
+      const wav = this._toWav(merged, this.sampleRate, 1, 16);
+      const base64 = this._arrayBufferToBase64(wav.buffer);
 
       const headers = { 'Content-Type': 'application/json' };
       if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
@@ -110,7 +120,8 @@ export class WhisperProvider extends SpeechToTextProvider {
         body: JSON.stringify({
           model: this.model,
           file: base64,
-          mime_type: 'audio/webm',
+          mime_type: 'audio/wav',
+          sample_rate: this.sampleRate,
           language: this.language,
         }),
         signal: AbortSignal.timeout(15000),
@@ -143,6 +154,33 @@ export class WhisperProvider extends SpeechToTextProvider {
     } finally {
       this._processing = false;
     }
+  }
+
+  _toWav(pcmBytes, sampleRate, channels, bitsPerSample) {
+    const numSamples = Math.floor(pcmBytes.byteLength / (bitsPerSample / 8 * channels));
+    const byteRate = sampleRate * channels * (bitsPerSample / 8);
+    const blockAlign = channels * (bitsPerSample / 8);
+    const header = new Uint8Array(44);
+    const dv = new DataView(header.buffer);
+    const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) header[off + i] = s.charCodeAt(i); };
+    writeStr(0, 'RIFF');
+    dv.setUint32(4, 36 + pcmBytes.byteLength, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    dv.setUint32(16, 16, true);
+    dv.setUint16(20, 1, true);            // PCM
+    dv.setUint16(22, channels, true);
+    dv.setUint32(24, sampleRate, true);
+    dv.setUint32(28, byteRate, true);
+    dv.setUint16(32, blockAlign, true);
+    dv.setUint16(34, bitsPerSample, true);
+    writeStr(36, 'data');
+    dv.setUint32(40, pcmBytes.byteLength, true);
+
+    const out = new Uint8Array(44 + pcmBytes.byteLength);
+    out.set(header, 0);
+    out.set(pcmBytes instanceof Uint8Array ? pcmBytes : new Uint8Array(pcmBytes), 44);
+    return out;
   }
 
   _arrayBufferToBase64(buffer) {

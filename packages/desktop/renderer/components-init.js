@@ -13,6 +13,7 @@ class AIAgentTool {
     this._voiceService = null;
     this._vizCanvas = null;
     this._usage = { requests: 0, tokens: 0 };
+    this._isStreaming = false; // Track streaming state to prevent duplicate answers
   }
 
   async init() {
@@ -45,7 +46,7 @@ class AIAgentTool {
       console.log('[AI Agent] Clearing app innerHTML');
       app.innerHTML = '';
       console.log('[AI Agent] Setting app style');
-      app.style.cssText = 'display:flex; flex-direction:column; height:100vh; overflow:hidden; background:white;';
+      app.style.cssText = 'display:flex; flex-direction:column; height:100vh; overflow:hidden; background:#0a0a14;';
       console.log('[AI Agent] App style set:', app.style.cssText);
 
       // ── HEADER (draggable title bar) ──
@@ -326,8 +327,13 @@ class AIAgentTool {
     header?.update({ status: 'Thinking...', statusColor: '#eab308' });
     this.components.timer?.start();
     this.components.errorBanner?.hide();
+    this._isStreaming = false;
 
-    // Create answer card first so streaming can update it
+    if (this._voiceService) {
+      this._voiceService.setLastQuestion(text);
+      this._voiceService.markAIRequest(); // T3
+    }
+
     panel?.addAnswer({
       question: text,
       answer: '',
@@ -345,11 +351,13 @@ class AIAgentTool {
       const answer = (result && typeof result === 'object' && 'answer' in result)
         ? result.answer : result;
 
-      // Update the existing card with final answer (streaming already updated it)
       panel?.updateLastAnswer(answer || 'No response');
       panel?.updateCardMeta({ model: result?.model || '', latency: result?.latency_ms || null });
 
-      // Track usage
+      if (this._voiceService) {
+        this._voiceService.markUIRender(); // T5
+      }
+
       this._usage.requests++;
       if (result?.usage?.total_tokens) {
         this._usage.tokens += result.usage.total_tokens;
@@ -371,6 +379,7 @@ class AIAgentTool {
     } finally {
       input?.setSending(false);
       panel?.setLoading(false);
+      this._isStreaming = false;
     }
   }
 
@@ -388,8 +397,16 @@ class AIAgentTool {
       console.log('[AI Agent] _startMic: importing VoiceService...');
       const { VoiceService } = await import('../src/voice-service.js');
       console.log('[AI Agent] _startMic: creating VoiceService instance');
+      console.log('[AI Agent] Config:', {
+        audioSource: this.config.audioSource,
+        micDevice: this.config.micDevice,
+        sttType: this.config.sttType,
+        hasDeepgramKey: !!this.config.deepgramApiKey,
+        workerUrl: this.config.workerUrl ? 'set' : 'not set'
+      });
+      
       const vs = new VoiceService({
-        audioSource: this.config.audioSource || 'mic',
+        audioSource: this.config.audioSource || 'engine',
         micDevice: this.config.micDevice,
         vadThreshold: this.config.vadThreshold || 0.015,
         vadSilenceMs: this.config.vadSilenceMs || 1200,
@@ -397,7 +414,7 @@ class AIAgentTool {
         sttType: this.config.sttType || 'auto',
         deepgramApiKey: this.config.deepgramApiKey || '',
         workerUrl: this.config.workerUrl || '',
-        debug: false
+        debug: true
       });
 
       vs.on('state', (data) => {
@@ -417,16 +434,34 @@ class AIAgentTool {
       });
 
       vs.on('partial-transcript', (data) => {
-        this.components.transcript?.setInterim(data.transcript);
+        // Flux mode: show accumulated text (finals + current partial)
+        // Legacy mode: show just the interim
+        const displayText = data.accumulated || data.transcript;
+        this.components.transcript?.setInterim(displayText);
       });
 
       vs.on('final-transcript', (data) => {
         this.components.transcript?.setInterim('');
         if (data.transcript?.trim()) {
           this.components.transcript?.addMessage(data.transcript, 'final');
-          if (this._mode === 'interview' && data.accumulated) {
+          // Legacy mode: auto-query on final transcript
+          if (this._mode === 'interview' && data.accumulated && data.from !== 'flux-turn') {
             this._handleAutoQuery(data.accumulated);
           }
+        }
+      });
+
+      // Flux mode: turn-ready fires after TurnManager debounce
+      vs.on('turn-ready', (data) => {
+        if (data.transcript?.trim() && this._mode === 'interview') {
+          console.log('[AI Agent] Flux turn-ready:', data.transcript.substring(0, 60));
+          this._handleAutoQuery(data.transcript);
+        }
+      });
+
+      vs.on('transcript-ready', (data) => {
+        if (data.transcript?.trim() && this._mode === 'interview') {
+          this._handleAutoQuery(data.transcript);
         }
       });
 
@@ -464,12 +499,12 @@ class AIAgentTool {
   async _stopMic() {
     if (this._voiceService) {
       this._voiceService.detachVisualizer();
-      this._voiceService.stop();
+      await this._voiceService.stop();
       this._voiceService = null;
     }
     this._micActive = false;
     this.components.vad?.update({ speaking: false });
-    this.components.audioStatus?.update({ micActive: false });
+    this.components.audioStatus?.update({ micActive: false, deviceName: 'Disconnected' });
     this.components.timer?.stop();
   }
 
@@ -480,13 +515,24 @@ class AIAgentTool {
 
   _wireKeyboard() {
     document.addEventListener('keydown', (e) => {
+      // Escape: toggle overlay visibility
       if (e.key === 'Escape') {
         e.preventDefault();
         window.electronAPI?.toggleOverlay?.();
       }
+      // Ctrl+Shift+M: toggle mic (legacy shortcut, kept for compatibility)
       if (e.ctrlKey && e.shiftKey && e.key === 'M') {
         e.preventDefault();
         this._toggleMic();
+      }
+      // Ctrl+Enter: send current input as question
+      if (e.ctrlKey && e.key === 'Enter') {
+        e.preventDefault();
+        const inputEl = this.components.input?.el?.querySelector('textarea, input');
+        if (inputEl && inputEl.value.trim()) {
+          this._onInputSend({ text: inputEl.value.trim() });
+          inputEl.value = '';
+        }
       }
     });
   }
@@ -494,10 +540,16 @@ class AIAgentTool {
   _wireIPC() {
     if (!window.electronAPI) return;
 
+    // Handle streaming answer updates - this updates the existing card
     window.electronAPI.onAnswerStream?.((data) => {
+      if (!this._isStreaming && this._voiceService) {
+        this._voiceService.markAIFirstToken(); // T4 - first streaming token
+      }
+      this._isStreaming = true;
       this.components.answerPanel?.updateLastAnswer(data.answer || '');
     });
 
+    // Handle answer ready - finalize the streaming card
     window.electronAPI.onAnswerReady?.((data) => {
       // Handle OCR-type answer-ready events
       if (data && data.type === 'ocr') {
@@ -507,12 +559,25 @@ class AIAgentTool {
         }
         return;
       }
-      // Handle regular answer-ready events
-      this.components.answerPanel?.addAnswer(data);
+      
+      // If we were streaming, update the existing card instead of adding a new one
+      if (this._isStreaming && data.answer) {
+        this.components.answerPanel?.updateLastAnswer(data.answer);
+        this.components.answerPanel?.updateCardMeta({ model: data.model || '', latency: data.latency_ms || null });
+        this._isStreaming = false;
+      } else {
+        // No streaming occurred - add new answer card
+        this.components.answerPanel?.addAnswer(data);
+      }
+      
       this.components.timer?.stop();
       this.components.header?.update({ status: 'Ready', statusColor: '#22c55e' });
       // Update connection status on successful query
       this.components.connStatus?.update({ connected: true, latency: data.latency_ms || null });
+      // Notify TurnManager that AI is done (unblocks queued turns)
+      if (this._voiceService?._turnManager) {
+        this._voiceService._turnManager.onAIComplete();
+      }
     });
 
     window.electronAPI.onToggleMic?.(() => {
@@ -560,7 +625,7 @@ class AIAgentTool {
     const s = document.createElement('style');
     s.id = 'ai-tool-styles';
     s.textContent = `
-      html, body { background: #0a0a14 !important; margin: 0; padding: 0; }
+      html, body { background: #0a0a14 !important; margin: 0; padding: 0; overflow: hidden; }
       .app { background: #0a0a14 !important; }
       .ai-tool-header { flex-shrink: 0; }
       .ai-tool-mode-bar { padding: 6px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); flex-shrink: 0; display: flex; gap: 4px; flex-wrap: wrap; }
@@ -568,10 +633,25 @@ class AIAgentTool {
       .ai-tool-context-bar { display:flex; align-items:center; gap:8px; padding:4px 12px; border-bottom:1px solid rgba(255,255,255,0.06); flex-shrink:0; }
       .ai-tool-viz { padding:6px 12px; border-bottom:1px solid rgba(255,255,255,0.06); flex-shrink:0; }
       .ai-tool-section-label { font-size:10px; font-weight:600; color:#64748b; letter-spacing:1px; margin-bottom:4px; }
-      .ai-tool-transcript { flex:0 0 auto; max-height:180px; overflow:hidden; display:flex; flex-direction:column; border-bottom:1px solid rgba(255,255,255,0.06); }
-      .ai-tool-answer { flex:1; min-height:120px; overflow:hidden; display:flex; flex-direction:column; }
+      .ai-tool-transcript { flex:0 1 auto; min-height:60px; max-height:150px; overflow-y:auto; display:flex; flex-direction:column; border-bottom:1px solid rgba(255,255,255,0.06); }
+      .ai-tool-answer { flex:1 1 0; min-height:0; overflow-y:auto; display:flex; flex-direction:column; }
+      @keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
       .ai-tool-input { flex-shrink:0; border-top:1px solid rgba(255,255,255,0.06); }
       .ai-tool-bottom { display:flex; align-items:center; gap:8px; padding:4px 12px; border-top:1px solid rgba(255,255,255,0.06); background:rgba(15,15,28,0.95); font-size:0.75em; flex-shrink:0; }
+      
+      /* Scrollbar styling */
+      .ai-tool-transcript::-webkit-scrollbar,
+      .ai-tool-answer::-webkit-scrollbar { width:6px; }
+      .ai-tool-transcript::-webkit-scrollbar-track,
+      .ai-tool-answer::-webkit-scrollbar-track { background:transparent; }
+      .ai-tool-transcript::-webkit-scrollbar-thumb,
+      .ai-tool-answer::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.1); border-radius:3px; }
+      .ai-tool-transcript::-webkit-scrollbar-thumb:hover,
+      .ai-tool-answer::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,0.2); }
+      
+      /* Ensure proper box model for flex children */
+      .ai-tool-transcript *,
+      .ai-tool-answer * { box-sizing: border-box; }
     `;
     document.head.appendChild(s);
   }

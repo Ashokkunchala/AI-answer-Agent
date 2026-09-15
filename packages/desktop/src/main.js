@@ -3,6 +3,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const fs = require('fs');
 const OCREngine = require('./ocr-engine');
+const { AudioSourceManager, WindowsAudioCapture } = require('./audio/windows-audio-capture');
 
 // ── Process Identity Obfuscation ──────────────────────────────────────────
 // Change process title so Task Manager / wmic shows a generic name
@@ -115,16 +116,86 @@ const ANTI_CAPTURE_SCRIPT = path.join(USER_DATA_PATH, 'anti_capture.ps1');
 // Centralized default worker URL (empty = user must configure)
 const DEFAULT_WORKER_URL = 'https://devops-ai-agent.ashokkunchla.workers.dev';
 
+const DEFAULT_CONFIG = {
+  workerUrl: DEFAULT_WORKER_URL,
+  apiKey: '',
+  model: 'auto',
+  captureDelay: 500,
+  hotkeyToggle: 'CommandOrControl+Shift+A',
+  hotkeyCapture: 'CommandOrControl+Shift+C',
+  hotkeyPanicHide: 'CommandOrControl+H',
+  hotkeyToggleAudio: 'CommandOrControl+L',
+  hotkeySilentCapture: 'CommandOrControl+J',
+  overlayOpacity: 0.95,
+  fontSize: 14,
+  theme: 'dark',
+  micDevice: 'default',
+  micLanguage: 'en',
+  micAutoSendDelay: 2000,
+  micVadThreshold: 15,
+  micGain: 1.5,
+  ocrLanguage: 'eng',
+  focusMode: 'all',
+  participants: [],
+  targetName: '',
+  deepgramApiKey: '',
+  sttType: 'auto',
+  eotThreshold: 0.5,
+  eotTimeoutMs: 1500,
+  eagerEotThreshold: 0.5,
+  probeModelOnStart: true,
+  interviewX: null,
+  interviewY: null,
+};
+
 function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_PATH)) {
-      const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (parseErr) {
+        // Corrupted JSON — backup the corrupt file and fall back to defaults
+        try {
+          const backupPath = CONFIG_PATH + '.corrupt.' + Date.now();
+          fs.copyFileSync(CONFIG_PATH, backupPath);
+          log('[Config] Corrupted config.json backed up to ' + backupPath + ', falling back to defaults');
+        } catch (_) { /* best effort */ }
+        return { ...DEFAULT_CONFIG };
+      }
+
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        log('[Config] config.json is not an object, falling back to defaults');
+        return { ...DEFAULT_CONFIG };
+      }
+
+      // Validate critical fields
+      if (parsed.workerUrl !== undefined && typeof parsed.workerUrl !== 'string') {
+        log('[Config] Invalid workerUrl type, using default');
+        parsed.workerUrl = DEFAULT_WORKER_URL;
+      }
+      if (parsed.deepgramApiKey !== undefined && typeof parsed.deepgramApiKey !== 'string') {
+        log('[Config] Invalid deepgramApiKey type, clearing');
+        parsed.deepgramApiKey = '';
+      }
+
+      // Ensure workerUrl is never empty or localhost-only (prevent ECONNREFUSED)
+      if (!parsed.workerUrl || parsed.workerUrl.trim() === '') {
+        parsed.workerUrl = DEFAULT_WORKER_URL;
+      }
+
+      // Deepgram key via environment when not set in config.json – the voice
+      // pipeline NEVER exposes the key to the renderer.
+      if (!parsed.deepgramApiKey && process.env.DEEPGRAM_API_KEY) {
+        parsed.deepgramApiKey = process.env.DEEPGRAM_API_KEY;
+      }
 
       // Load resume from file if exists
       try {
         const resumePath = path.join(app.getPath('userData'), 'resume.txt');
         if (fs.existsSync(resumePath)) {
-          config.resume = fs.readFileSync(resumePath, 'utf8');
+          parsed.resume = fs.readFileSync(resumePath, 'utf8');
         }
       } catch (e) { /* ignore */ }
 
@@ -132,42 +203,36 @@ function loadConfig() {
       try {
         const jobDescPath = path.join(app.getPath('userData'), 'job_desc.txt');
         if (fs.existsSync(jobDescPath)) {
-          config.jobDesc = fs.readFileSync(jobDescPath, 'utf8');
+          parsed.jobDesc = fs.readFileSync(jobDescPath, 'utf8');
         }
       } catch (e) { /* ignore */ }
 
-      return config;
+      return parsed;
     }
-  } catch (e) { /* ignore */ }
-  return {
-    workerUrl: DEFAULT_WORKER_URL,
-    apiKey: '',
-    model: 'auto',
-    captureDelay: 500,
-    hotkeyToggle: 'CommandOrControl+Shift+A',
-    hotkeyCapture: 'CommandOrControl+Shift+C',
-    overlayOpacity: 0.95,
-    fontSize: 14,
-    theme: 'dark',
-    micDevice: 'default',
-    micLanguage: 'en',
-    micAutoSendDelay: 2000,
-    micVadThreshold: 15,
-    micGain: 1.5,
-    ocrLanguage: 'eng',
-    focusMode: 'all',
-    participants: [],
-    targetName: '',
-    // Interview panel / voice service
-    deepgramApiKey: '',
-    sttType: 'auto',
-    interviewX: null,
-    interviewY: null,
-  };
+  } catch (e) {
+    log('[Config] loadConfig error: ' + e.message);
+  }
+  return { ...DEFAULT_CONFIG };
 }
 
 function saveConfig(cfg) {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  try {
+    // Backup existing config before overwriting
+    if (fs.existsSync(CONFIG_PATH)) {
+      try {
+        const backupPath = CONFIG_PATH + '.bak';
+        fs.copyFileSync(CONFIG_PATH, backupPath);
+      } catch (_) { /* best effort */ }
+    }
+    // Atomic write: write to temp file then rename (atomic on NTFS)
+    const tmpPath = CONFIG_PATH + '.tmp.' + process.pid;
+    fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2));
+    fs.renameSync(tmpPath, CONFIG_PATH);
+  } catch (e) {
+    log('[Config] saveConfig error: ' + e.message);
+    // Fallback: direct write if rename fails
+    try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2)); } catch (_) { /* give up */ }
+  }
 }
 
 const config = loadConfig();
@@ -297,11 +362,14 @@ function applyWindowStealth(win, options = {}) {
     handleValue = Number(hwndBuf);
   }
 
-  // 1. Set extended window style: ToolWindow (hidden from Alt+Tab) + NoActivate (won't steal focus)
+  // 1. Set extended window style: ToolWindow (hidden from Alt+Tab).
+  // NOTE: WS_EX_NOACTIVATE is deliberately NOT applied. It prevents the
+  // window from ever becoming active, which blocks keyboard input to the
+  // question/input text boxes (typing did nothing).
   if (fnGetWindowLongW && fnSetWindowLongW) {
     try {
       const exStyle = fnGetWindowLongW(handleValue, GWL_EXSTYLE);
-      const newStyle = exStyle | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+      const newStyle = exStyle | WS_EX_TOOLWINDOW;
       fnSetWindowLongW(handleValue, GWL_EXSTYLE, newStyle);
     } catch (e) { /* best effort */ }
   }
@@ -558,15 +626,18 @@ function createInterviewPanelWindow() {
     isInterviewVisible = false;
   });
 
+  let _moveDebounce = null;
   interviewPanel.on('move', () => {
-    // Save position for next open
-    try {
-      const pos = interviewPanel.getPosition();
-      const cfg = loadConfig();
-      cfg.interviewX = pos[0];
-      cfg.interviewY = pos[1];
-      saveConfig(cfg);
-    } catch (e) {}
+    // Debounce: save position at most once per 500ms during drag
+    if (_moveDebounce) clearTimeout(_moveDebounce);
+    _moveDebounce = setTimeout(() => {
+      try {
+        const pos = interviewPanel.getPosition();
+        config.interviewX = pos[0];
+        config.interviewY = pos[1];
+        saveConfig(config);
+      } catch (e) { /* ignore */ }
+    }, 500);
   });
 }
 
@@ -679,23 +750,37 @@ async function processScreenCapture(capturePath) {
     if (detected && mainWindow && !mainWindow.isDestroyed()) {
       const aiPrompt = engine.formatForAI(detected);
       if (aiPrompt) {
+        // Send detected question to overlay
         mainWindow.webContents.send('answer-ready', {
           type: 'ocr',
           text: detected.question.substring(0, 500),
           confidence: result.confidence
         });
 
-        // Auto-query AI
+        // Stream AI answer (consistent with voice pipeline)
         try {
-          const answer = await queryAI(aiPrompt);
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('answer-ready', {
-              type: 'answer',
-              question: detected.question.substring(0, 200),
-              answer: answer,
-              provider: 'DevOps AI Agent',
-              model: config.model
-            });
+          const targets = [];
+          if (interviewPanel && !interviewPanel.isDestroyed()) targets.push(interviewPanel);
+          if (mainWindow && !mainWindow.isDestroyed()) targets.push(mainWindow);
+
+          const onDelta = (full) => {
+            for (const w of targets) {
+              try { w.webContents.send('answer-stream', { type: 'answer', answer: full }); } catch (_) {}
+            }
+          };
+
+          const answer = await queryAI(aiPrompt, onDelta);
+          for (const w of targets) {
+            try {
+              w.webContents.send('answer-ready', {
+                type: 'answer',
+                question: detected.question.substring(0, 200),
+                answer: answer.answer,
+                provider: 'DevOps AI Agent',
+                model: config.model,
+                latency_ms: answer.latency_ms
+              });
+            } catch (_) {}
           }
         } catch (e) {
           console.error('AI query failed:', e.message);
@@ -771,11 +856,15 @@ function parseSSE(body, onDelta) {
       if (!line.startsWith('data:')) return;
       const data = line.slice(5).trim();
       if (data === '[DONE]') return;
-      const j = JSON.parse(data);
-      const delta = j.choices?.[0]?.delta?.content;
-      if (delta) {
-        full += delta;
-        if (onDelta) onDelta(full, delta);
+      try {
+        const j = JSON.parse(data);
+        const delta = j.choices?.[0]?.delta?.content;
+        if (delta) {
+          full += delta;
+          if (onDelta) onDelta(full, delta);
+        }
+      } catch (parseErr) {
+        // Malformed JSON in SSE stream — skip this line, don't crash
       }
     }
   });
@@ -802,10 +891,13 @@ async function streamRequest(base, payload) {
 
 // AI connector - uses worker routing (model selection, system prompts, fallback chains all handled server-side)
 async function queryAI(prompt, onDelta, history, taskType) {
-  const base = (config.workerUrl || DEFAULT_WORKER_URL).replace(/\/+$/, '');
-  if (!base) {
-    throw new Error('Worker URL not configured. Open Settings and enter your worker URL.');
+  // Build list of worker URLs to try (configured first, then remote fallback)
+  const configuredUrl = (config.workerUrl || '').replace(/\/+$/, '');
+  const urls = [];
+  if (configuredUrl && configuredUrl !== DEFAULT_WORKER_URL) {
+    urls.push(configuredUrl);
   }
+  urls.push(DEFAULT_WORKER_URL);
 
   // Build messages - worker handles system prompt injection
   const messages = [];
@@ -838,34 +930,61 @@ async function queryAI(prompt, onDelta, history, taskType) {
   const startTime = Date.now();
   let lastError = null;
 
-  // Single attempt - worker handles model fallback internally
-  try {
-    const r = await streamRequest(base, payload);
+  // Try each URL in sequence until one works
+  for (const base of urls) {
+    try {
+      log(`[AI] Trying worker: ${base}`);
+      const r = await streamRequest(base, payload);
 
-    if (r.ok && onDelta) {
-      onDelta('', '');
+      if (r.ok && onDelta) {
+        onDelta('', '');
+      }
+
+      if (!r.ok) {
+        const err = await r.text().catch(() => r.statusText);
+        lastError = new Error(`Agent ${r.status}: ${err.substring(0, 200)}`);
+        log(`[AI] Worker ${base} returned ${r.status}, trying next...`);
+        continue; // Try next URL
+      }
+
+      const content = await parseSSE(r.body, onDelta);
+      if (!content || !content.trim()) {
+        lastError = new Error('Empty response from agent');
+        continue;
+      }
+
+      const latencyMs = Date.now() - startTime;
+      log(`[AI] Success from ${base} in ${latencyMs}ms`);
+      return { answer: content, latency_ms: latencyMs };
+    } catch (e) {
+      lastError = e;
+      log(`[AI] Worker ${base} failed: ${e.message}`);
+      continue; // Try next URL
     }
-
-    if (!r.ok) {
-      const err = await r.text().catch(() => r.statusText);
-      throw new Error(`Agent ${r.status}: ${err.substring(0, 200)}`);
-    }
-
-    const content = await parseSSE(r.body, onDelta);
-    if (!content || !content.trim()) throw new Error('Empty response from agent');
-
-    const latencyMs = Date.now() - startTime;
-    return { answer: content, latency_ms: latencyMs };
-  } catch (e) {
-    lastError = e;
-    throw e;
   }
+
+  // All URLs failed
+  throw lastError || new Error('All worker endpoints failed');
 }
 
 // IPC Handlers
 ipcMain.handle('get-config', () => config);
 ipcMain.handle('save-config', (event, c) => {
-  Object.assign(config, c);
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
+  // Allowlist of config keys the renderer can write
+  const ALLOWED_KEYS = new Set([
+    'workerUrl', 'apiKey', 'model', 'captureDelay', 'hotkeyToggle', 'hotkeyCapture',
+    'overlayOpacity', 'fontSize', 'theme', 'micDevice', 'micLanguage',
+    'micAutoSendDelay', 'micVadThreshold', 'micGain', 'ocrLanguage', 'focusMode',
+    'participants', 'targetName', 'deepgramApiKey', 'sttType', 'eotThreshold',
+    'eotTimeoutMs', 'eagerEotThreshold', 'probeModelOnStart', 'resume', 'jobDesc',
+    'interviewX', 'interviewY', 'roleName'
+  ]);
+  for (const key of Object.keys(c)) {
+    if (ALLOWED_KEYS.has(key)) {
+      config[key] = c[key];
+    }
+  }
   saveConfig(config);
   return true;
 });
@@ -891,7 +1010,13 @@ ipcMain.handle('query-ai', async (event, { prompt, history, taskType }) => {
       lastSent = full;
     }
   };
-  return await queryAI(prompt, onDelta, history, taskType);
+  try {
+    const result = await queryAI(prompt, onDelta, history, taskType);
+    return result;
+  } catch (e) {
+    log('[AI] query-ai IPC error:', e.message);
+    throw new Error(e.message || 'AI request failed');
+  }
 });
 ipcMain.handle('minimize-to-tray', () => { if (mainWindow) mainWindow.hide(); });
 ipcMain.handle('open-settings', () => openSettings());
@@ -979,6 +1104,206 @@ ipcMain.handle('get-screen-info', () => {
 ipcMain.handle('get-audio-sources', async () => {
   const sources = await desktopCapturer.getSources({ types: ['audio', 'window'] });
   return sources.map(s => ({ id: s.id, name: s.name, thumbnailDataURL: s.thumbnail.toDataURL() }));
+});
+
+// ── Windows Audio Engine (WASAPI loopback) ─────────────────────────────
+// Captures the system's audio (or a specific process) at the engine level,
+// processes it through the DSP pipeline and streams 16 kHz frames to the
+// renderer via 'audio-engine-frame'. No virtual audio drivers required.
+const audioSourceManager = new AudioSourceManager();
+const audioEngineCaptures = new Map(); // webContents.id -> { capture, sender }
+
+function stopAudioEngineFor(webContentsId) {
+  const entry = audioEngineCaptures.get(webContentsId);
+  if (entry && entry.capture) {
+    try { entry.capture.stop(); } catch (_) { /* best effort */ }
+  }
+  audioEngineCaptures.delete(webContentsId);
+}
+
+ipcMain.handle('get-audio-engine-sources', async () => {
+  try {
+    const { sources, defaultSource } = await audioSourceManager.enumerateSources();
+    return { sources, defaultSource };
+  } catch (err) {
+    return { sources: [{ pid: null, name: 'System Output (Default device)', kind: 'system', isSystem: true }], defaultSource: null, error: String(err.message || err) };
+  }
+});
+
+ipcMain.handle('start-audio-engine', (event, opts = {}) => {
+  const sender = event.sender;
+  const id = sender.id;
+  log(`[AudioEngine] Starting audio engine for webContents ${id}`);
+  stopAudioEngineFor(id);
+
+  const source = opts.source || { type: 'system' };
+  const vadThreshold = typeof opts.vadThreshold === 'number' ? opts.vadThreshold : 0.015;
+  const noiseGate = opts.noiseGate !== false;
+
+  log(`[AudioEngine] Source: ${JSON.stringify(source)}, vadThreshold: ${vadThreshold}`);
+
+  const capture = new WindowsAudioCapture({});
+  capture.onFrame = (frame) => {
+    if (sender.isDestroyed()) { stopAudioEngineFor(id); return; }
+    const pcm = frame.pcm.buffer.slice(frame.pcm.byteOffset, frame.pcm.byteOffset + frame.pcm.byteLength);
+    sender.send('audio-engine-frame', {
+      pcm,
+      sampleRate: frame.sampleRate,
+      level: frame.level,
+      vad: frame.vad,
+      speech: frame.speech,
+      classifier: frame.classifier,
+      classifierConfidence: frame.classifierConfidence,
+      pts: frame.ts,
+    });
+  };
+  capture.onError = (err) => {
+    log(`[AudioEngine] Capture error: ${err.message || err}`);
+    if (!sender.isDestroyed()) {
+      sender.send('audio-engine-event', { type: 'error', message: String((err && err.message) || err) });
+    }
+  };
+
+  let result;
+  try {
+    result = capture.start(source, { vadThreshold, noiseGate });
+    log(`[AudioEngine] Capture start result: ${JSON.stringify(result)}`);
+  } catch (err) {
+    log(`[AudioEngine] Capture start exception: ${err.message}`);
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+  if (result.ok) {
+    audioEngineCaptures.set(id, { capture, sender });
+    log(`[AudioEngine] Audio engine started successfully for webContents ${id}`);
+    // Clean up when webContents is destroyed (window closed/crashed)
+    sender.on('destroyed', () => stopAudioEngineFor(id));
+    sender.on('render-process-gone', () => stopAudioEngineFor(id));
+  }
+  return { ok: result.ok, running: result.ok, source, metrics: capture.metrics.snapshot() };
+});
+
+ipcMain.handle('stop-audio-engine', (event) => {
+  stopAudioEngineFor(event.sender.id);
+  return true;
+});
+
+ipcMain.handle('get-audio-engine-status', (event) => {
+  const entry = audioEngineCaptures.get(event.sender.id);
+  return entry && entry.capture ? entry.capture.snapshot() : { running: false, source: null };
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// Voice Service (interview panel) — main-process voice engine
+// Owns WASAPI capture + DSP + VAD + streaming STT + worker-AI streaming,
+// latency instrumentation and the session lifecycle. The existing renderer
+// voice pipeline is left untouched; this service is the newer, dedicated
+// path wired to the interview panel UI.
+// ───────────────────────────────────────────────────────────────────────
+const { VoiceService } = require('./voice/voice-service');
+let voiceService = null;
+
+function getVoiceService() {
+  if (voiceService) return voiceService;
+  voiceService = new VoiceService({
+    config: {
+      deepgramApiKey: config.deepgramApiKey || '',
+      workerUrl: config.workerUrl || '',
+      defaultWorkerUrl: DEFAULT_WORKER_URL,
+      apiKey: config.apiKey || '',
+      resume: config.resume,
+      jobDesc: config.jobDesc,
+      targetName: config.targetName,
+      participants: config.participants,
+      audioSourceId: config.audioSourceId,
+      audioSourceName: config.audioSourceName,
+      sampleRate: 16000,
+      model: (config.model && config.model !== 'auto') ? config.model : 'auto',
+      sttModel: config.sttModel || 'flux-general-en',
+      eagerAnswer: config.eagerAnswer !== false,
+      eagerEotThreshold: config.eagerEotThreshold ?? 0.5,
+      eotThreshold: config.eotThreshold ?? 0.5,
+      eotTimeoutMs: config.eotTimeoutMs ?? 1500,
+      endGraceMs: config.endGraceMs ?? 800,
+      // Whis-AI-style early answer: fire generation as soon as a partial is a
+      // confident question (mid-interviewer-speech) instead of waiting for
+      // end-of-turn. Tunable; defaults keep the 2s budget.
+      earlyAnswerOnPartial: config.earlyAnswerOnPartial !== false,
+      partialMinLength: config.partialMinLength ?? 16,
+      partialQuestionThreshold: config.partialQuestionThreshold ?? 0.55,
+      voiceAnswerEndpoint: !!config.voiceAnswerEndpoint,
+      probeModelOnStart: config.probeModelOnStart !== false,
+      modelCacheFile: path.join(USER_DATA_PATH, 'voice-model-cache.json'),
+      log: (...a) => log('[Voice]', ...a),
+    },
+    emitToRenderer: (channel, payload) => {
+      const targets = [];
+      if (interviewPanel && !interviewPanel.isDestroyed()) targets.push(interviewPanel);
+      for (const w of targets) {
+        try { w.webContents.send(channel, payload); } catch (_) { /* */ }
+      }
+      if (!targets.length && mainWindow && !mainWindow.isDestroyed()) {
+        try { mainWindow.webContents.send(channel, payload); } catch (_) { /* */ }
+      }
+    },
+  });
+  voiceService.init().catch((err) => {
+    log('[Voice] init error:', err && err.message || err);
+  });
+  return voiceService;
+}
+
+async function ensureVoiceService() {
+  const svc = getVoiceService();
+  return svc;
+}
+
+ipcMain.handle('voice:get-sources', async () => {
+  const svc = await ensureVoiceService();
+  const sources = await svc.listSources();
+  return { sources, selected: svc.sourceManager.selected, state: svc.sourceManager.selectedState };
+});
+
+ipcMain.handle('voice:select-source', async (event, id) => {
+  const svc = await ensureVoiceService();
+  return svc.selectSource(id);
+});
+
+ipcMain.handle('voice:start', async () => {
+  const svc = await ensureVoiceService();
+  return svc.start();
+});
+
+ipcMain.handle('voice:stop', async () => {
+  const svc = await ensureVoiceService();
+  await svc.stop();
+  return { ok: true };
+});
+
+ipcMain.handle('voice:set-listening', (event, enabled) => {
+  if (!voiceService) return { ok: false, error: 'not-started' };
+  return voiceService.setListening(!!enabled);
+});
+
+ipcMain.handle('voice:get-diagnostics', () => {
+  if (!voiceService) return null;
+  return voiceService.getDiagnostics();
+});
+
+ipcMain.handle('voice:get-latency', () => {
+  if (!voiceService) return null;
+  return { last: voiceService.latency.last, stats: voiceService.latency.stats() };
+});
+
+ipcMain.handle('voice:report-ui-latency', (event, ms) => {
+  if (!voiceService) return;
+  voiceService.reportUiLatency(typeof ms === 'number' ? ms : NaN);
+});
+
+// Mic frames pushed from the renderer (getUserMedia) when Microphone is the
+// selected source. 48 kHz mono int16 PCM.
+ipcMain.on('voice:mic-frame', (event, buffer) => {
+  if (!voiceService) return;
+  voiceService.pushMicFrame(Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []));
 });
 
 // Snippet management
@@ -1381,27 +1706,119 @@ app.whenReady().then(async () => {
     });
   });
 
-  globalShortcut.register(config.hotkeyToggle, () => toggleOverlay());
-  globalShortcut.register('Esc', () => {
-    if (settingsWindow && settingsWindow.isFocused()) { settingsWindow.close(); return; }
-    toggleOverlay();
-  });
-  globalShortcut.register(config.hotkeyCapture, async () => {
-    const p = await captureScreen();
-    if (p && mainWindow) mainWindow.webContents.send('screen-captured', p);
-  });
-  globalShortcut.register('CommandOrControl+Shift+S', () => {
-    isScreenWatching ? stopScreenWatch() : startScreenWatch();
-  });
-  globalShortcut.register('CommandOrControl+Shift+M', () => {
-    if (mainWindow) mainWindow.webContents.send('toggle-mic');
+  try {
+    globalShortcut.register(config.hotkeyToggle, () => toggleOverlay());
+  } catch (_) { /* already bound */ }
+  try {
+    globalShortcut.register('Esc', () => {
+      if (settingsWindow && settingsWindow.isFocused()) { settingsWindow.close(); return; }
+      toggleOverlay();
+    });
+  } catch (_) { /* already bound */ }
+  try {
+    globalShortcut.register(config.hotkeyCapture, async () => {
+      const p = await captureScreen();
+      if (p && mainWindow) mainWindow.webContents.send('screen-captured', p);
+    });
+  } catch (_) { /* already bound */ }
+  try {
+    globalShortcut.register('CommandOrControl+Shift+S', () => {
+      isScreenWatching ? stopScreenWatch() : startScreenWatch();
+    });
+  } catch (_) { /* already bound */ }
+  try {
+    globalShortcut.register('CommandOrControl+Shift+M', () => {
+      if (mainWindow) mainWindow.webContents.send('toggle-mic');
+      if (interviewPanel && !interviewPanel.isDestroyed()) {
+        interviewPanel.webContents.send('toggle-mic');
+      }
+    });
+  } catch (_) { /* already bound */ }
+  try {
+    globalShortcut.register('CommandOrControl+Shift+I', () => {
+      toggleInterviewPanel();
+    });
+  } catch (_) { /* already bound */ }
+
+  // Latency HUD toggle (Ctrl+Shift+D) — shown in the interview panel UI.
+  const sendHudToggle = () => {
     if (interviewPanel && !interviewPanel.isDestroyed()) {
-      interviewPanel.webContents.send('toggle-mic');
+      interviewPanel.webContents.send('voice:hud-toggle');
     }
-  });
-  globalShortcut.register('CommandOrControl+Shift+I', () => {
-    toggleInterviewPanel();
-  });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('voice:hud-toggle');
+    }
+  };
+  try {
+    globalShortcut.register('CommandOrControl+Shift+D', sendHudToggle);
+  } catch (_) { /* already bound (rare) */ }
+
+  // ── Whis-AI style hotkeys ───────────────────────────────────────
+  // Ctrl+H: Panic hide — instantly hide ALL windows
+  try {
+    globalShortcut.register('CommandOrControl+H', () => {
+      const allWindows = BrowserWindow.getAllWindows();
+      const anyVisible = allWindows.some(w => !w.isDestroyed() && w.isVisible());
+      if (anyVisible) {
+        // Hide everything
+        for (const w of allWindows) {
+          if (w && !w.isDestroyed() && w.isVisible()) w.hide();
+        }
+        isOverlayVisible = false;
+        isInterviewVisible = false;
+        log('[Hotkey] Ctrl+H: All windows hidden (panic mode)');
+      } else {
+        // Restore everything
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show();
+          mainWindow.setAlwaysOnTop(true, 'screen-saver');
+          applyAntiCaptureWithRetry(mainWindow);
+          applyWindowStealth(mainWindow);
+          mainWindow.focus();
+          isOverlayVisible = true;
+        }
+        if (interviewPanel && !interviewPanel.isDestroyed()) {
+          interviewPanel.show();
+          interviewPanel.focus();
+          applyAntiCaptureWithRetry(interviewPanel);
+          isInterviewVisible = true;
+        }
+        log('[Hotkey] Ctrl+H: All windows restored');
+      }
+    });
+  } catch (_) { /* already bound */ }
+
+  // Ctrl+L: Toggle audio/listening on interview panel
+  try {
+    globalShortcut.register('CommandOrControl+L', () => {
+      if (interviewPanel && !interviewPanel.isDestroyed()) {
+        interviewPanel.webContents.send('toggle-mic');
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('toggle-mic');
+      }
+      log('[Hotkey] Ctrl+L: Toggle audio');
+    });
+  } catch (_) { /* already bound */ }
+
+  // Ctrl+J: Silent screen capture + OCR
+  try {
+    globalShortcut.register('CommandOrControl+J', async () => {
+      const p = await captureScreen();
+      if (p) {
+        // Send to both windows for processing
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('screen-captured', p);
+        }
+        if (interviewPanel && !interviewPanel.isDestroyed()) {
+          interviewPanel.webContents.send('screen-captured', p);
+        }
+        // Auto-process OCR silently
+        processScreenCapture(p).catch(() => {});
+        log('[Hotkey] Ctrl+J: Silent screen capture');
+      }
+    });
+  } catch (_) { /* already bound */ }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
@@ -1414,5 +1831,8 @@ app.on('will-quit', async () => {
   stopStealthReapply();
   globalShortcut.unregisterAll();
   stopScreenWatch();
+  if (voiceService) {
+    try { await voiceService.stop(); } catch (_) { /* */ }
+  }
   if (ocrEngine) await ocrEngine.terminate();
 });

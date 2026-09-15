@@ -10,6 +10,27 @@ import { callGateway, gatewayUsable } from './providers/gateway.js';
 // Kept tiny (cheap during promo) and only invoked as a last resort.
 const GATEWAY_FALLBACK_CHAIN = ['gpt-5.6-sol'];
 
+// Models that recently failed with credit/quota errors are skipped inside
+// routing chains for a while, so a degraded account stops paying a repeated
+// ~1s dead attempt on every request. Explicitly-requested models are always
+// honored (a direct ask for a model is the client's choice).
+const CREDIT_COOLDOWN_MS = 10 * 60 * 1000;
+const creditCooldowns = new Map();
+const CREDIT_ERROR_RE = /insufficient|quota|credit|ai gateway|billing/i;
+
+function isCreditCooledDown(modelKey) {
+  const until = creditCooldowns.get(modelKey);
+  if (!until) return false;
+  if (until <= Date.now()) { creditCooldowns.delete(modelKey); return false; }
+  return true;
+}
+
+function learnCreditCooldown(modelKey, message) {
+  if (CREDIT_ERROR_RE.test(String(message || ''))) {
+    creditCooldowns.set(modelKey, Date.now() + CREDIT_COOLDOWN_MS);
+  }
+}
+
 export function httpError(status, message) {
   const err = new Error(message);
   err.status = status;
@@ -120,6 +141,13 @@ export async function routeRequest(body, env) {
       continue;
     }
 
+    // Auto-routing skips models on credit cooldown (a recent quota/credit
+    // failure) so the chain falls through to a healthy model immediately.
+    if (!explicitModel && isCreditCooledDown(modelKey)) {
+      attempts.push({ model: modelKey, status: 'skipped', reason: 'credit cooldown active' });
+      continue;
+    }
+
     try {
       const startTime = Date.now();
       // Use per-model max_tokens when user hasn't specified one
@@ -131,6 +159,7 @@ export async function routeRequest(body, env) {
       // Add timeout for individual model requests (30 seconds)
       const response = await timeoutPromise(30000, callProvider(modelKey, enhancedMessages, reqOptions, env));
       const elapsed = Date.now() - startTime;
+      creditCooldowns.delete(modelKey);
 
       attempts.push({ model: modelKey, modelId: modelConfig.id, status: 'success', latency_ms: elapsed });
 
@@ -148,6 +177,7 @@ export async function routeRequest(body, env) {
       };
     } catch (error) {
       lastError = error;
+      learnCreditCooldown(modelKey, error.message);
       attempts.push({ model: modelKey, status: 'error', error: error.message });
       console.log(`[Router] ${modelKey} failed: ${error.message}`);
     }
@@ -189,5 +219,7 @@ export async function routeRequest(body, env) {
     }
   }
 
-  throw new Error(`All models failed. Last error: ${lastError?.message}`);
+  const err = new Error(`All models failed. Last error: ${lastError?.message}`);
+  err.attempts = attempts;
+  throw err;
 }

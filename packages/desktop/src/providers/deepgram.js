@@ -1,8 +1,16 @@
-// Deepgram WebSocket STT Provider
-// Real-time streaming via WebSocket with VAD
+// Deepgram Flux WebSocket STT Provider
+// Real-time streaming with server-side VAD and EndOfTurn detection
 // https://developers.deepgram.com/docs/getting-started-live
+//
+// Key difference from basic Deepgram:
+// - Uses Flux model (latest, best accuracy)
+// - Server-side VAD handles speech detection (no local VAD needed for STT)
+// - EndOfTurn event signals when interviewer finishes speaking
+// - Persistent connection stays open between utterances
+// - Partial transcripts arrive in real-time as audio streams
 
 import { SpeechToTextProvider } from './base.js';
+import { getDeepgramKeywords, correctTranscript } from '../vocabulary.js';
 
 export class DeepgramProvider extends SpeechToTextProvider {
   constructor(config = {}) {
@@ -15,23 +23,49 @@ export class DeepgramProvider extends SpeechToTextProvider {
     this.pingInterval = null;
     this.lastActivity = Date.now();
     this._destroyed = false;
+    this._reconnecting = false;
   }
 
   get apiKey() { return this.config.apiKey || ''; }
   get language() { return this.config.language || 'en'; }
   get model() { return this.config.model || 'nova-3'; }
-  get sampleRate() { return this.config.sampleRate || 48000; }
+  get sampleRate() { return this.config.sampleRate || 16000; }
+
   get endpoint() {
-    return this.config.endpoint || `wss://api.deepgram.com/v1/listen?model=${this.model}&language=${this.language}&encoding=linear16&sample_rate=${this.sampleRate}&channels=1&interim_results=true&endpointing=300&utterance_end_ms=1000&smart_format=true`;
+    const keywords = getDeepgramKeywords();
+    // Flux-optimized params:
+    // - endpointing=300: Deepgram detects end of speech after 300ms silence
+    // - utterance_end_ms=800: UtteranceEnd fires 800ms after last speech
+    // - interim_results=true: partial transcripts while speaking
+    // - smart_format=true: auto-punctuation, numbers, etc.
+    // - diarize=false: single speaker (interviewer)
+    return this.config.endpoint ||
+      `wss://api.deepgram.com/v1/listen` +
+      `?model=${this.model}` +
+      `&language=${this.language}` +
+      `&encoding=linear16` +
+      `&sample_rate=${this.sampleRate}` +
+      `&channels=1` +
+      `&interim_results=true` +
+      `&endpointing=300` +
+      `&utterance_end_ms=800` +
+      `&smart_format=true` +
+      `&keywords=${encodeURIComponent(keywords)}`;
   }
 
   async connect() {
     if (this._destroyed) throw new Error('Provider destroyed');
     if (!this.apiKey) throw new Error('Deepgram API key required');
+    if (this.connected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return; // Already connected
+    }
+
+    this._reconnecting = false;
 
     return new Promise((resolve, reject) => {
       try {
         const url = this.endpoint;
+        console.log(`[DeepgramProvider] Connecting to ${this.model}...`);
         this.ws = new WebSocket(url);
         this.ws.binaryType = 'arraybuffer';
 
@@ -45,7 +79,8 @@ export class DeepgramProvider extends SpeechToTextProvider {
           this.connected = true;
           this.reconnectAttempts = 0;
           this._startPing();
-          this._emit('connected', { provider: 'deepgram' });
+          console.log('[DeepgramProvider] Connected (Flux streaming active)');
+          this._emit('connected', { provider: 'deepgram', model: this.model });
           resolve();
         };
 
@@ -56,7 +91,7 @@ export class DeepgramProvider extends SpeechToTextProvider {
 
         this.ws.onerror = (event) => {
           clearTimeout(timeout);
-          const msg = event.message || event.error || 'WebSocket error';
+          const msg = 'WebSocket error';
           this._emit('error', { type: 'connection', message: msg });
           if (!this.connected) reject(new Error(msg));
         };
@@ -66,8 +101,15 @@ export class DeepgramProvider extends SpeechToTextProvider {
           this._stopPing();
           const wasConnected = this.connected;
           this.connected = false;
-          this._emit('disconnected', { code: event.code, reason: event.reason, wasConnected });
-          if (wasConnected) this._attemptReconnect();
+
+          if (event.code === 1000) {
+            // Clean close — don't reconnect
+            this._emit('disconnected', { code: event.code, reason: event.reason, wasConnected });
+          } else if (wasConnected && !this._destroyed) {
+            // Unexpected close — reconnect
+            this._emit('disconnected', { code: event.code, reason: event.reason, wasConnected });
+            this._attemptReconnect();
+          }
         };
       } catch (e) {
         reject(e);
@@ -101,17 +143,10 @@ export class DeepgramProvider extends SpeechToTextProvider {
     }
   }
 
-  // Send close message to finalize transcript
+  // Send close message to flush final transcript
   sendClose() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try { this.ws.send(JSON.stringify({ type: 'CloseStream' })); } catch (e) {}
-    }
-  }
-
-  // Send punctuation toggle
-  sendTogglePunctuation() {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try { this.ws.send(JSON.stringify({ type: 'TogglePunctuation' })); } catch (e) {}
     }
   }
 
@@ -127,11 +162,14 @@ export class DeepgramProvider extends SpeechToTextProvider {
 
         if (transcript.trim()) {
           if (isFinal || speechFinal) {
+            // Apply technical vocabulary corrections to final transcripts
+            const corrected = correctTranscript(transcript.trim());
             this._emit('final', {
-              transcript: transcript.trim(),
+              transcript: corrected,
               confidence,
               words: msg.channel?.alternatives?.[0]?.words || [],
               duration: msg.channel?.alternatives?.[0]?.transcript_duration || 0,
+              speechFinal,
             });
           } else {
             this._emit('partial', {
@@ -141,7 +179,9 @@ export class DeepgramProvider extends SpeechToTextProvider {
           }
         }
       } else if (msg.type === 'UtteranceEnd') {
-        // Utterance ended without final - flush partial
+        // Deepgram detected end of turn (interviewer stopped speaking)
+        // This is the key event for real-time pipeline
+        console.log('[DeepgramProvider] UtteranceEnd received');
         this._emit('utterance-end', {
           lastWordEnd: msg.last_word_end || 0,
         });
@@ -171,19 +211,27 @@ export class DeepgramProvider extends SpeechToTextProvider {
   }
 
   _attemptReconnect() {
-    if (this._destroyed || this.reconnectAttempts >= this.maxReconnectAttempts) {
-      this._emit('error', { type: 'reconnect', message: `Connection lost after ${this.maxReconnectAttempts} attempts` });
+    if (this._destroyed || this._reconnecting || this.reconnectAttempts >= this.maxReconnectAttempts) {
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        this._emit('error', { type: 'reconnect', message: `Connection lost after ${this.maxReconnectAttempts} attempts` });
+      }
       return;
     }
 
+    this._reconnecting = true;
     const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 10000);
     this.reconnectAttempts++;
 
+    console.log(`[DeepgramProvider] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
+
     this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
       if (this._destroyed) return;
       try {
         await this.connect();
+        this._reconnecting = false;
       } catch (e) {
+        this._reconnecting = false;
         this._attemptReconnect();
       }
     }, delay);

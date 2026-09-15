@@ -264,6 +264,28 @@
       padding: 10px 16px 14px; background: rgba(6, 10, 18, 0.95);
       border-top: 1px solid var(--border); flex-shrink: 0;
     }
+
+    .source-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 16px; background: rgba(6, 10, 18, 0.85);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .source-select {
+      flex: 1; min-width: 0;
+      background: var(--bg-input); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      font-size: 10px; font-family: inherit; padding: 5px 8px; outline: none;
+    }
+    .source-select:focus { border-color: var(--accent); }
+    .source-state {
+      font-size: 8px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.5px; padding: 3px 7px; border-radius: 4px;
+      color: var(--text-muted); background: rgba(255,255,255,0.04); white-space: nowrap;
+    }
+    .source-state.connected { color: var(--success); background: rgba(0,230,118,0.1); }
+    .source-state.connecting, .source-state.switching { color: var(--warning); background: rgba(255,171,64,0.12); }
+    .source-state.fallback { color: var(--accent); background: var(--accent-dim); }
+    .source-state.error { color: var(--error); background: rgba(255,82,82,0.12); }
     .input-row { display: flex; gap: 8px; align-items: flex-end; }
     .input-field {
       flex: 1; padding: 10px 14px; border: 1px solid var(--border);
@@ -339,6 +361,8 @@
         <div class="metric-item">VAD: <span class="metric-val" id="mVad">--</span></div>
         <div class="metric-item">STT: <span class="metric-val" id="mStt">--</span></div>
         <div class="metric-item">AI: <span class="metric-val" id="mAi">--</span></div>
+        <div class="metric-item">Lat: <span class="metric-val" id="mLat">--</span></div>
+        <div class="metric-item">Timer: <span class="metric-val" id="mGhost">0:00</span></div>
       </div>
     </div>
 
@@ -377,12 +401,25 @@
         <div class="debug-row"><span class="debug-label">Total Latency</span><span class="debug-value" id="dbgTotal">--</span></div>
         <div class="debug-row"><span class="debug-label">STT Provider</span><span class="debug-value" id="dbgProvider">--</span></div>
         <div class="debug-row"><span class="debug-label">State</span><span class="debug-value" id="dbgState">--</span></div>
+        <div class="debug-row"><span class="debug-label">Latency P50</span><span class="debug-value" id="dbgP50">--</span></div>
+        <div class="debug-row"><span class="debug-label">Latency P95</span><span class="debug-value" id="dbgP95">--</span></div>
+        <div class="debug-row"><span class="debug-label">Latency MAX</span><span class="debug-value" id="dbgMax">--</span></div>
+        <div class="debug-row"><span class="debug-label">UI Render</span><span class="debug-value" id="dbgUi">--</span></div>
+        <div class="debug-row"><span class="debug-label">Audio Source</span><span class="debug-value" id="dbgSource">--</span></div>
+        <div class="debug-row"><span class="debug-label">Output Device</span><span class="debug-value" id="dbgDevice">--</span></div>
       </div>
+    </div>
+
+    <div class="source-bar">
+      <select class="source-select" id="sourceSelect" title="Interview audio source">
+        <option value="system">System Output (Default device)</option>
+      </select>
+      <span class="source-state" id="sourceState">--</span>
     </div>
 
     <div class="mic-section">
       <div class="mic-row">
-        <button class="mic-btn" id="micBtn" title="Toggle Microphone (Ctrl+Shift+M)">&#127908;</button>
+        <button class="mic-btn" id="micBtn" title="Toggle Microphone (Ctrl+L)">&#127908;</button>
         <div class="mic-level">
           <div class="mic-level-fill" id="micLevelFill"></div>
         </div>
@@ -406,11 +443,10 @@
 <script type="module">
 // ═══════════════════════════════════════════════════════════════
 // WishAI Interview Panel - Renderer (ES Module)
-// Uses modular voice-service.js and audio-visualizer.js
+// Pure UI over the main-process Voice Service (window.interviewAPI.voice).
+// All capture / DSP / VAD / STT / AI processing happens in the main
+// process; this page only renders state, waveform and answers.
 // ═══════════════════════════════════════════════════════════════
-
-import { VoiceService, VoiceState } from '../src/voice-service.js';
-import { AudioVisualizer } from '../src/audio-visualizer.js';
 
 // ─── DOM Helpers ──────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -430,15 +466,62 @@ const vizCanvas = $('vizCanvas');
 const debugPanel = $('debugPanel');
 const webcamPreview = $('webcamPreview');
 const webcamVideo = $('webcamVideo');
+const sourceSelect = $('sourceSelect');
+const sourceState = $('sourceState');
 
 // ─── State ─────────────────────────────────────────────────
 let config = {};
-let isMicActive = false;
+let isListening = false;
 let isProcessing = false;
 let conversationHistory = [];
 let webcamStream = null;
-let voiceService = null;
-let visualizer = null;
+let voice = null;            // window.interviewAPI.voice namespace
+let unsubs = [];
+let liveStreamCard = null;
+let aiFirstTokenMs = null;
+let ghostTimerInterval = null;
+let ghostTimerStart = null;
+let ghostTimerSeconds = 0;
+
+// ─── Ghost Timer (usage tracking) ─────────────────────────
+// Only counts while actively listening (Whis-AI style)
+function startGhostTimer() {
+  if (ghostTimerInterval) return;
+  ghostTimerStart = Date.now();
+  ghostTimerSeconds = 0;
+  ghostTimerInterval = setInterval(() => {
+    ghostTimerSeconds = Math.floor((Date.now() - ghostTimerStart) / 1000);
+    const mins = Math.floor(ghostTimerSeconds / 60);
+    const secs = ghostTimerSeconds % 60;
+    const el = document.getElementById('mGhost');
+    if (el) el.textContent = mins + ':' + String(secs).padStart(2, '0');
+  }, 1000);
+}
+
+function stopGhostTimer() {
+  if (ghostTimerInterval) {
+    clearInterval(ghostTimerInterval);
+    ghostTimerInterval = null;
+  }
+}
+
+function getGhostTimerSeconds() {
+  return ghostTimerSeconds;
+}
+
+// ─── Auto-Pilot: Unified voice + OCR + AI flow ────────────
+// When voice detects a question, automatically capture screen for context
+async function autoCaptureScreenContext() {
+  try {
+    const path = await window.interviewAPI?.manualCapture?.();
+    if (path) {
+      // Screen captured silently for AI context — no visible action needed
+      // The voice pipeline already has the transcript; screen context is bonus
+      return path;
+    }
+  } catch (_) { /* silent */ }
+  return null;
+}
 
 // ─── Bridge ────────────────────────────────────────────────
 function waitForBridge(timeoutMs = 15000) {
@@ -455,6 +538,7 @@ function waitForBridge(timeoutMs = 15000) {
 async function loadConfig() {
   await waitForBridge();
   config = await window.interviewAPI.getConfig();
+  voice = window.interviewAPI.voice;
 }
 
 // ─── UI State Machine ─────────────────────────────────────
@@ -489,209 +573,329 @@ function setUIState(state) {
   }
 }
 
-// ─── Voice Pipeline ──────────────────────────────────────
-async function startMic() {
-  if (isMicActive) return;
-  isMicActive = true;
-
+// ─── Voice Service ────────────────────────────────────────
+async function startVoice() {
+  if (isListening) return;
+  isListening = true;
   micBtn.classList.add('active');
-  micBtn.innerHTML = '&#127908;';
   liveTranscript.style.display = 'block';
   vizSection.style.display = 'block';
   welcomeCard.style.display = 'none';
-  updateTranscriptDisplay('', 'Initializing voice pipeline...');
-
-  voiceService = new VoiceService({
-    workerUrl: config.workerUrl || '',
-    deepgramApiKey: config.deepgramApiKey || '',
-    sttType: config.sttType || 'auto',
-    sttModel: config.sttModel || 'whisper-large-v3',
-    micLanguage: config.micLanguage || 'en',
-    micDevice: config.micDevice || 'default',
-    micGain: config.micGain || 1.5,
-    vadThreshold: config.vadThreshold || 0.015,
-    vadSilenceMs: config.vadSilenceMs || 1200,
-    vadMinSpeechMs: config.vadMinSpeechMs || 300,
-    autoSendDelay: config.autoSendDelay || 1500,
-    debug: config.debug || false,
-  });
-
-  // Wire voice events to UI
-  voiceService.on('state-change', ({ from, to }) => {
-    setUIState(to);
-    updateMetricsDisplay();
-  });
-
-  voiceService.on('mic-started', ({ deviceName }) => {
-    updateTranscriptDisplay('', 'Listening... Speak now');
-  });
-
-  voiceService.on('mic-stopped', () => {
-    setUIState('IDLE');
-    micLevelFill.style.width = '0%';
-  });
-
-  voiceService.on('speech-start', ({ level }) => {
-    setUIState('SPEAKING');
-  });
-
-  voiceService.on('speech-end', ({ duration }) => {
-    setUIState('LISTENING');
-  });
-
-  voiceService.on('partial-transcript', ({ transcript }) => {
-    updateTranscriptDisplay(voiceService.finalTranscript, transcript);
-    setUIState('SPEAKING');
-    updateMetricsDisplay();
-  });
-
-  voiceService.on('final-transcript', ({ transcript, accumulated, from }) => {
-    if (from === 'auto-send') {
-      questionInput.value = accumulated || transcript;
-      sendQuestion();
-      voiceService.finalTranscript = '';
-      voiceService.interimTranscript = '';
-      updateTranscriptDisplay('', 'Sent! Listening...');
-    } else {
-      updateTranscriptDisplay(accumulated || transcript, 'Listening...');
-      scheduleAutoSend();
-    }
-    updateMetricsDisplay();
-  });
-
-  voiceService.on('transcript-cleared', () => {
-    updateTranscriptDisplay('', 'Listening...');
-  });
-
-  voiceService.on('stt-connected', (data) => {
-    updateMetricsDisplay();
-  });
-
-  voiceService.on('stt-disconnected', () => {
-    updateMetricsDisplay();
-  });
-
-  voiceService.on('latency', (metricsData) => {
-    updateMetricsDisplay();
-  });
-
-  voiceService.on('error', ({ type, message, userMessage }) => {
-    console.error(`Voice ${type} error:`, message);
-    setUIState('ERROR');
-    micBtn.classList.remove('active');
-    micBtn.classList.add('error');
-    updateTranscriptDisplay('', userMessage || message);
-  });
-
-  // Start the voice pipeline
-  await voiceService.start();
-
-  // Attach visualizer to canvas
-  if (voiceService.analyserNode && vizCanvas) {
-    visualizer = new AudioVisualizer(vizCanvas, { mode: 'bars', scale: 0.9 });
-    visualizer.attach(voiceService.analyserNode);
-    visualizer.start();
-  }
-
-  // Update mic level continuously
-  startMicLevelLoop();
+  updateTranscriptDisplay('', 'Starting voice engine...');
+  // Auto-start ghost timer and webcam
+  startGhostTimer();
+  if (!webcamStream) toggleWebcam();
+  await voice.setListening(true);
 }
 
-let micLevelRaf = null;
-function startMicLevelLoop() {
-  function loop() {
-    if (!isMicActive || !voiceService) { micLevelRaf = null; return; }
-    const level = voiceService.metrics?.inputLevel || 0;
-    micLevelFill.style.width = (level * 300) + '%';
-    micLevelRaf = requestAnimationFrame(loop);
-  }
-  micLevelRaf = requestAnimationFrame(loop);
-}
-
-function stopMic() {
-  if (!isMicActive) return;
-  isMicActive = false;
-
-  if (micLevelRaf) { cancelAnimationFrame(micLevelRaf); micLevelRaf = null; }
-  if (visualizer) { visualizer.destroy(); visualizer = null; }
-
-  if (voiceService) {
-    voiceService.destroy();
-    voiceService = null;
-  }
-
-  micBtn.classList.remove('active', 'error');
-  micBtn.innerHTML = '&#127908;';
-  liveTranscript.style.display = 'none';
-  vizSection.style.display = 'none';
+async function stopVoice() {
+  if (!isListening) return;
+  isListening = false;
+  micBtn.classList.remove('active');
+  await voice.setListening(false);
   micLevelFill.style.width = '0%';
-  setUIState('IDLE');
+  updateTranscriptDisplay('', 'Listening paused.');
+  stopGhostTimer();
 }
 
 function toggleMic() {
-  if (isMicActive) stopMic();
-  else startMic();
+  if (isListening) stopVoice();
+  else startVoice();
+}
+
+async function initVoiceBridge() {
+  // Kick off the capture + STT + AI warmup immediately (warm but not
+  // listening — audio only feeds STT once the user presses the mic button).
+  await voice.start();
+
+  unsubs.push(voice.onState((st) => onVoiceState(st)));
+  unsubs.push(voice.onFrame((f) => onVoiceFrame(f)));
+  unsubs.push(voice.onPartialTranscript((p) => onPartial(p)));
+  unsubs.push(voice.onFinalTranscript((f) => onFinal(f)));
+  unsubs.push(voice.onClassified((c) => { /* hint only */ }));
+  unsubs.push(voice.onAiStarted((d) => onAiStarted(d)));
+  unsubs.push(voice.onAiToken((d) => onAiToken(d)));
+  unsubs.push(voice.onAiFirstToken((d) => { aiFirstTokenMs = d.ms; }));
+  unsubs.push(voice.onAiCompleted((d) => onAiCompleted(d)));
+  unsubs.push(voice.onError((e) => onVoiceError(e)));
+  unsubs.push(voice.onLatency((l) => onLatency(l)));
+  unsubs.push(voice.onSources((s) => onSources(s)));
+  unsubs.push(voice.onDevices((d) => onDevices(d)));
+  unsubs.push(voice.onMicRequest((r) => onMicRequest(r)));
+  if (voice.onToggleHud) unsubs.push(voice.onToggleHud(() => toggleHud()));
+
+  // Listen for screen captures (from Ctrl+J hotkey)
+  window.interviewAPI?.onScreenCaptured?.((path) => {
+    // Screen captured — auto-process for OCR context
+    window.interviewAPI?.processCapture?.(path).catch(() => {});
+  });
+
+  // Populate sources + devices.
+  try {
+    const src = await voice.getSources();
+    populateSources(src);
+  } catch (_) { /* */ }
+  try {
+    const diag = await voice.getDiagnostics();
+    if (diag) applyDiagnostics(diag);
+  } catch (_) { /* */ }
+}
+
+function onVoiceState(st) {
+  if (!st) return;
+  setUIState(st.session || 'IDLE');
+  $('mMic').textContent = isListening ? 'ON' : 'OFF';
+  $('mStt').textContent = st.stt && st.stt.connected ? 'Connected' : 'Disconnected';
+  $('mAi').textContent = st.ai && st.ai.warm ? 'Warm' : 'Cold';
+  if (st.session === 'READY' || st.session === 'LISTENING') {
+    if (!isListening) {
+      updateTranscriptDisplay('', 'Voice engine ready. Press the mic button to start listening.');
+    }
+  }
+  if (st.session === 'WARMING_UP') {
+    const stt = st.stt;
+    const msg = !stt || !stt.connected
+      ? 'STT NOT CONNECTED — add a Deepgram API key in Settings for live transcription.'
+      : 'Warming up...';
+    updateTranscriptDisplay('', msg);
+    transcriptState.textContent = 'SETUP';
+  }
+}
+
+let lastFrameT = 0;
+function onVoiceFrame(f) {
+  // Audio level meter (~clamp to a usable 0-60% fill).
+  const pct = Math.min(100, (f.level || 0) * 300);
+  micLevelFill.style.width = pct + '%';
+  if (f.speech) setUIState('SPEAKING');
+  else if (isListening && !isProcessing) setUIState('LISTENING');
+  drawWave(f.pcm);
+}
+
+function onPartial(p) {
+  updateTranscriptDisplay('', p.transcript || '');
+  $('dbgFirst').textContent = 'partial';
+}
+
+function onFinal(f) {
+  updateTranscriptDisplay(f.transcript, '');
+}
+
+let renderMark = null;
+function onAiStarted(d) {
+  isProcessing = true;
+  setUIState('PROCESSING');
+  aiFirstTokenMs = null;
+  renderMark = null;
+  welcomeCard.style.display = 'none';
+  ensureLiveCard(d.question || '');
+  // Auto-pilot: silently capture screen for context when question detected
+  autoCaptureScreenContext();
+}
+
+function onAiToken(d) {
+  if (!liveStreamCard) return;
+  const answerEl = liveStreamCard.querySelector('.answer-text');
+  if (answerEl) answerEl.textContent = d.text || '';
+  if (renderMark == null) {
+    // Measure real paint latency: first render frame after the first token.
+    renderMark = performance.now();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (renderMark != null && window.interviewAPI.voice) {
+          window.interviewAPI.voice.reportUiLatency(Math.round(performance.now() - renderMark));
+          renderMark = null;
+        }
+      });
+    });
+  }
+}
+
+function onAiCompleted(d) {
+  removeLiveCard();
+  showAnswer({ type: 'answer-result', question: lastQuestion || '', answer: d.text || '' });
+  const total = d.ms;
+  $('mLat').textContent = total != null ? total + 'ms' : '--';
+  $('dbgTotal').textContent = total != null ? total + 'ms' : '--';
+  $('dbgAi').textContent = aiFirstTokenMs != null ? aiFirstTokenMs + 'ms' : '--';
+  isProcessing = false;
+  setUIState('LISTENING');
+}
+
+function onVoiceError(e) {
+  console.error('[Voice]', e.code, e.message, e.userMessage);
+  setUIState('ERROR');
+  micBtn.classList.remove('active');
+  micBtn.classList.add('error');
+  if (e.userMessage) updateTranscriptDisplay('', e.userMessage);
+  if (e.code === 'STT_NOT_CONFIGURED') transcriptState.textContent = 'NO STT';
+  else if (e.code === 'AI_UNREACHABLE') transcriptState.textContent = 'AI OFFLINE';
+}
+
+function onLatency(l) {
+  if (!l) return;
+  const last = l.last;
+  if (last && last.ms) {
+    $('mLat').textContent = last.ms + 'ms';
+    $('dbgTotal').textContent = last.ms + 'ms';
+  }
+  const s = l.stats || {};
+  if (s.total) {
+    $('dbgP50').textContent = (s.total.p50 | 0) + 'ms';
+    $('dbgP95').textContent = (s.total.p95 | 0) + 'ms';
+    $('dbgMax').textContent = (s.total.max | 0) + 'ms';
+  }
+}
+
+// ─── Audio sources ────────────────────────────────────────
+let currentSources = [];
+function populateSources(src) {
+  currentSources = (src && src.sources) || [];
+  const selectedId = src && src.selected ? src.selected.id : 'system';
+  const sel = sourceSelect;
+  sel.innerHTML = '';
+  for (const s of currentSources) {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = s.kind === 'mic' ? s.name : (s.kind === 'system' ? s.name : '🔊 ' + s.name);
+    opt.selected = s.id === selectedId;
+    sel.appendChild(opt);
+  }
+  applySourceState((src && src.state) || '--');
+}
+
+function applySourceState(state) {
+  const el = sourceState;
+  el.textContent = state || '--';
+  el.className = 'source-state' + (state ? ' ' + state : '');
+}
+
+function onSources(s) {
+  if (s && Array.isArray(s.sources)) populateSources(s);
+  else applySourceState((s && s.state) || '--');
+}
+
+function onDevices(d) {
+  if (!d) return;
+  const render = (d.devices || []).find((x) => x.flow === 'render' && x.default);
+  $('dbgDevice').textContent = render ? (render.name + (render.bluetooth ? ' (Bluetooth)' : ' (wired)')) : '--';
+}
+
+async function onSourceSelect() {
+  const id = sourceSelect.value;
+  if (!id) return;
+  try {
+    const res = await voice.selectSource(id);
+    if (res && res.ok) {
+      updateTranscriptDisplay('', 'Switched audio source.');
+      if (id.startsWith('mic:')) startVoice();
+    }
+  } catch (_) { /* */ }
+}
+
+// ─── Mic (getUserMedia) bridge ────────────────────────────
+let micStream = null, micCtx = null, micProc = null;
+async function onMicRequest(req) {
+  if (!req || !req.enable) { disableMicCapture(); return; }
+  await enableMicCapture(req.deviceId);
+}
+async function enableMicCapture(deviceId) {
+  if (micStream) return;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: deviceId ? { exact: deviceId } : undefined,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: 1,
+      }
+    });
+    micCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = micCtx.createMediaStreamSource(micStream);
+    micProc = micCtx.createScriptProcessor(4096, 1, 1);
+    src.connect(micProc);
+    micProc.connect(micCtx.destination);
+    micProc.onaudioprocess = (e) => {
+      const ch = e.inputBuffer.getChannelData(0);
+      const out = new Int16Array(ch.length);
+      for (let i = 0; i < ch.length; i++) {
+        const s = Math.max(-1, Math.min(1, ch[i]));
+        out[i] = s < 0 ? (s * 0x8000) | 0 : (s * 0x7FFF) | 0;
+      }
+      window.interviewAPI.voice.sendMicFrame(out.buffer);
+    };
+    micCtx.resume().catch(() => { });
+  } catch (err) {
+    onVoiceError({ code: 'MIC_UNAVAILABLE', message: err.message, userMessage: 'Microphone unavailable: ' + err.message });
+  }
+}
+function disableMicCapture() {
+  if (micProc) { try { micProc.disconnect(); } catch (_) { } micProc = null; }
+  if (micCtx) { micCtx.close().catch(() => { }); micCtx = null; }
+  if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+}
+
+// ─── Waveform ─────────────────────────────────────────────
+let waveSamples = new Int16Array(0);
+function drawWave(pcmBuf) {
+  if (!pcmBuf) return;
+  const ctx = vizCanvas.getContext('2d');
+  const W = vizCanvas.width = vizCanvas.clientWidth || 340;
+  const H = vizCanvas.height = vizCanvas.clientHeight || 48;
+  ctx.clearRect(0, 0, W, H);
+  // pcmBuf is a raw byte buffer of 16-bit LE samples (2 bytes/sample).
+  const incoming = new Int16Array(pcmBuf.buffer, pcmBuf.byteOffset, pcmBuf.byteLength >> 1);
+  // Keep ~0.4s window of samples for a live scrolling waveform.
+  const windowLen = Math.min(6400, waveSamples.length + incoming.length);
+  const merged = new Int16Array(windowLen);
+  merged.set(waveSamples.subarray(Math.max(0, waveSamples.length - (windowLen - incoming.length))), 0);
+  merged.set(incoming, windowLen - incoming.length);
+  waveSamples = merged;
+  if (waveSamples.length < 8) return;
+  const step = Math.max(1, Math.floor(waveSamples.length / 160));
+  ctx.beginPath();
+  for (let i = 0; i < waveSamples.length; i += step) {
+    const x = (i / waveSamples.length) * W;
+    const y = H / 2 - (waveSamples[i] / 32768) * (H / 2 - 2);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(0,229,255,0.85)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
 }
 
 // ─── Transcript ──────────────────────────────────────────
-let autoSendTimer = null;
-const AUTO_SEND_DELAY = 1500;
-
 function updateTranscriptDisplay(final, interim) {
+  if (!transcriptBody) return;
   let html = '';
   if (final) html += '<span class="final">' + escapeHTML(final) + '</span>';
   if (interim) html += '<span class="interim">' + escapeHTML(interim) + '</span>';
   html += '<span class="cursor"></span>';
-  transcriptBody.innerHTML = html;
+  transcriptBody.innerHTML = html || '<span class="interim">…</span>';
 }
 
-function scheduleAutoSend() {
-  if (autoSendTimer) clearTimeout(autoSendTimer);
-  autoSendTimer = setTimeout(() => {
-    if (!isMicActive || isProcessing) return;
-    if (voiceService) {
-      const pending = (voiceService.finalTranscript + ' ' + voiceService.interimTranscript).trim();
-      if (pending.length > 3) {
-        questionInput.value = pending;
-        sendQuestion();
-        voiceService.finalTranscript = '';
-        voiceService.interimTranscript = '';
-        updateTranscriptDisplay('', 'Sent! Listening...');
-      }
-    }
-  }, AUTO_SEND_DELAY);
-}
-
-// ─── AI Query ─────────────────────────────────────────────
-let liveStreamCard = null;
+// ─── AI query (typed) ─────────────────────────────────────
+let lastQuestion = '';
 
 async function sendQuestion() {
   const question = questionInput.value.trim();
   if (!question || isProcessing) return;
-
   isProcessing = true;
   setUIState('PROCESSING');
   sendBtn.disabled = true;
-  const aiStart = Date.now();
-
   try {
-    updateLiveCard('', question);
-
+    lastQuestion = question;
     const result = await window.interviewAPI.queryAI({
       prompt: question,
       history: conversationHistory,
       model: config.model,
     });
-
-    removeLiveCard();
     showAnswer({ type: 'answer-result', question, answer: result });
-
     conversationHistory.push({ role: 'user', content: question }, { role: 'assistant', content: result });
     if (conversationHistory.length > 12) conversationHistory.splice(0, conversationHistory.length - 12);
-
     setUIState('LISTENING');
   } catch (err) {
-    removeLiveCard();
     showAnswer({ type: 'answer-result', question, answer: 'Error: ' + err.message });
     setUIState('ERROR');
   } finally {
@@ -701,19 +905,24 @@ async function sendQuestion() {
   }
 }
 
-function updateLiveCard(answer, question) {
-  if (!liveStreamCard) {
-    welcomeCard.style.display = 'none';
-    liveStreamCard = document.createElement('div');
-    liveStreamCard.className = 'question-card';
-    liveStreamCard.innerHTML =
-      '<div class="question-header"><span class="q-badge">Q</span></div>' +
-      '<div class="question-body"><div class="question-text">' + escapeHTML(question) + '</div></div>' +
-      '<div class="answer-section"><div class="answer-label">Answer</div><div class="answer-text thinking-dots"></div></div>';
-    answersContainer.prepend(liveStreamCard);
-  }
-  const answerEl = liveStreamCard.querySelector('.answer-text');
-  if (answerEl) answerEl.textContent = answer || 'Thinking...';
+function ensureLiveCard(question) {
+  if (liveStreamCard) return;
+  lastQuestion = question || '';
+  welcomeCard.style.display = 'none';
+  liveStreamCard = document.createElement('div');
+  liveStreamCard.className = 'question-card';
+  liveStreamCard.innerHTML =
+    '<div class="question-header"><span class="q-badge">Q</span><span class="q-speaker" id="liveQ">' + escapeHTML(question || '') + '</span>' +
+    '<span class="q-time" id="liveT">0ms</span></div>' +
+    '<div class="question-body"><div class="question-text">' + escapeHTML(question || '') + '</div></div>' +
+    '<div class="answer-section"><div class="answer-label">Answer</div><div class="answer-text thinking-dots"></div></div>';
+  answersContainer.prepend(liveStreamCard);
+  const start = Date.now();
+  const t = setInterval(() => {
+    const el = liveStreamCard && $('liveT');
+    if (el) el.textContent = (Date.now() - start) + 'ms';
+    else clearInterval(t);
+  }, 200);
 }
 
 function removeLiveCard() {
@@ -731,7 +940,7 @@ function showAnswer(data) {
     '<div class="question-header"><span class="q-badge">Q</span><span class="q-time">' + time + '</span></div>' +
     '<div class="question-body"><div class="question-text">' + escapeHTML(data.question || '') + '</div></div>' +
     '<div class="answer-section"><div class="answer-label">Answer</div><div class="answer-text">' + formatAnswer(data.answer || '') + '</div></div>' +
-    '<div class="answer-meta"><span>AI Agent</span></div>' +
+    '<div class="answer-meta"><span>AI Agent</span><span id="aiLat" style="margin-left:auto;"></span></div>' +
     '<div class="answer-actions">' +
       '<button class="action-btn" data-action="copy" data-text="' + escapeAttr(data.answer || '') + '">&#128203; Copy</button>' +
       '<button class="action-btn" data-action="save" data-title="' + escapeAttr(data.question || '') + '" data-content="' + escapeAttr(data.answer || '') + '">&#128190; Save</button>' +
@@ -739,10 +948,7 @@ function showAnswer(data) {
 
   answersContainer.prepend(card);
   while (answersContainer.children.length > 10) answersContainer.removeChild(answersContainer.lastChild);
-
-  card.querySelectorAll('.action-btn').forEach(btn => {
-    btn.addEventListener('click', handleAction);
-  });
+  card.querySelectorAll('.action-btn').forEach((btn) => btn.addEventListener('click', handleAction));
 }
 
 function handleAction(e) {
@@ -750,18 +956,14 @@ function handleAction(e) {
   const action = btn.dataset.action;
   if (action === 'copy') {
     navigator.clipboard.writeText(btn.dataset.text).then(() => {
-      btn.classList.add('copied');
-      btn.innerHTML = '&#10003; Copied';
+      btn.classList.add('copied'); btn.innerHTML = '&#10003; Copied';
       setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = '&#128203; Copy'; }, 1500);
     });
   } else if (action === 'save') {
     window.interviewAPI.saveSnippet({
-      title: btn.dataset.title,
-      content: btn.dataset.content,
-      category: 'interview'
+      title: btn.dataset.title, content: btn.dataset.content, category: 'interview'
     }).then(() => {
-      btn.classList.add('copied');
-      btn.innerHTML = '&#10003; Saved';
+      btn.classList.add('copied'); btn.innerHTML = '&#10003; Saved';
       setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = '&#128190; Save'; }, 1500);
     });
   }
@@ -777,43 +979,33 @@ function formatAnswer(text) {
   s = s.replace(/\n/g, '<br>');
   return s;
 }
-
 function escapeHTML(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
 }
-
 function escapeAttr(s) {
   return escapeHTML(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// ─── Metrics ──────────────────────────────────────────────
-function updateMetricsDisplay() {
-  const m = voiceService?.metrics || {};
-  $('mMic').textContent = m.micConnectMs ? m.micConnectMs + 'ms' : '--';
-  $('mVad').textContent = m.vadDetectionMs ? m.vadDetectionMs + 'ms' : '--';
-  $('mStt').textContent = m.firstPartialMs ? m.firstPartialMs + 'ms' : '--';
-  $('mAi').textContent = m.aiLatencyMs ? m.aiLatencyMs + 'ms' : '--';
-
-  const diag = voiceService?.getDiagnostics() || {};
-  $('dbgConn').textContent = diag.sttConnected ? 'Connected' : 'Disconnected';
-  $('dbgConn').className = 'debug-value ' + (diag.sttConnected ? 'ok' : 'err');
-  $('dbgMic').textContent = diag.micName || 'N/A';
-  $('dbgLevel').textContent = (diag.inputLevel * 100).toFixed(1) + '%';
-  $('dbgVad').textContent = diag.isSpeaking ? 'Speaking' : 'Silent';
-  $('dbgFirst').textContent = m.firstPartialMs ? m.firstPartialMs + 'ms' : '--';
-  $('dbgFinal').textContent = m.firstFinalMs ? m.firstFinalMs + 'ms' : '--';
-  $('dbgAi').textContent = m.aiLatencyMs ? m.aiLatencyMs + 'ms' : '--';
-  $('dbgTotal').textContent = m.totalLatencyMs ? (m.totalLatencyMs / 1000).toFixed(2) + 's' : '--';
-  $('dbgProvider').textContent = diag.sttType || 'None';
-  $('dbgState').textContent = diag.state || 'IDLE';
+// ─── Diagnostics ──────────────────────────────────────────
+function applyDiagnostics(diag) {
+  const st = diag.state || {};
+  $('dbgConn').textContent = st.stt && st.stt.connected ? 'Connected' : 'Disconnected';
+  $('dbgConn').className = 'debug-value ' + (st.stt && st.stt.connected ? 'ok' : 'err');
+  $('dbgProvider').textContent = (st.stt && st.stt.provider) || 'None';
+  $('dbgState').textContent = st.session || 'IDLE';
+  $('dbgSource').textContent = (st.audio && st.audio.source && st.audio.source.name) || '--';
+  $('dbgDevice').textContent = (st.device && st.device.defaultRenderId) ? 'id: ' + st.device.defaultRenderId : '--';
+  const counters = st.counters || {};
+  $('dbgFirst').textContent = 'utterances:' + counters.utterances;
+  $('dbgFinal').textContent = 'answers:' + counters.answers;
 }
 
 // ─── Webcam ───────────────────────────────────────────────
 async function toggleWebcam() {
   if (webcamStream) {
-    webcamStream.getTracks().forEach(t => t.stop());
+    webcamStream.getTracks().forEach((t) => t.stop());
     webcamStream = null;
     webcamPreview.classList.remove('active');
     webcamVideo.srcObject = null;
@@ -833,6 +1025,7 @@ async function toggleWebcam() {
 // ─── Event Listeners ──────────────────────────────────────
 micBtn.addEventListener('click', toggleMic);
 sendBtn.addEventListener('click', sendQuestion);
+sourceSelect.addEventListener('change', onSourceSelect);
 questionInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuestion(); }
 });
@@ -849,44 +1042,69 @@ $('historyBtn').addEventListener('click', async () => {
     if (result?.success && result.history?.length) {
       const items = result.history.slice(0, 5);
       let text = 'Recent History:\n\n';
-      items.forEach(h => {
-        text += `Q: ${h.question}\nA: ${h.answer.substring(0, 100)}...\n\n`;
+      items.forEach((h) => {
+        text += 'Q: ' + h.question + '\nA: ' + h.answer.substring(0, 100) + '...\n\n';
       });
       alert(text);
     } else {
       alert('No history yet.');
     }
-  } catch (e) {}
+  } catch (_) { /* */ }
 });
 
 document.addEventListener('keydown', (e) => {
+  // Escape: toggle mic if listening, otherwise toggle overlay
   if (e.key === 'Escape') {
-    if (isMicActive) toggleMic();
+    if (isListening) toggleMic();
     else window.interviewAPI?.toggleOverlay();
   }
+  // Ctrl+Shift+M: toggle mic (legacy)
   if (e.ctrlKey && e.shiftKey && e.key === 'M') {
     e.preventDefault();
     toggleMic();
   }
+  // Ctrl+Shift+D: toggle debug/HUD panel
+  if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+    e.preventDefault();
+    toggleHud();
+  }
+  // Ctrl+Enter: send typed question
+  if (e.ctrlKey && e.key === 'Enter') {
+    e.preventDefault();
+    sendQuestion();
+  }
 });
 
-// IPC listeners
-if (window.interviewAPI) {
-  window.interviewAPI.onAnswerReady?.((data) => showAnswer(data));
-  window.interviewAPI.onAnswerStream?.((data) => {
-    if (liveStreamCard) {
-      const answerEl = liveStreamCard.querySelector('.answer-text');
-      if (answerEl) answerEl.textContent = data.answer;
-    }
-  });
-  window.interviewAPI.onToggleMic?.(() => toggleMic());
+function toggleHud() {
+  if (debugPanel) debugPanel.classList.toggle('visible');
 }
+
+window.addEventListener('beforeunload', () => {
+  unsubs.forEach((u) => { try { u(); } catch (_) { } });
+  unsubs = [];
+  disableMicCapture();
+  stopGhostTimer();
+});
+
+// IPC listeners (legacy channels kept wired)
+window.interviewAPI.onAnswerReady?.((data) => showAnswer(data));
+window.interviewAPI.onAnswerStream?.((data) => {
+  if (liveStreamCard) {
+    const answerEl = liveStreamCard.querySelector('.answer-text');
+    if (answerEl) answerEl.textContent = data.answer;
+  }
+});
+window.interviewAPI.onToggleMic?.(() => toggleMic());
 
 // ─── Init ─────────────────────────────────────────────────
 loadConfig().then(() => {
-  setUIState('IDLE');
+  setUIState('LISTENING');
+  initVoiceBridge().catch((e) => {
+    setUIState('ERROR');
+    console.error('Voice bridge failed:', e);
+  });
   console.log('Interview Panel loaded (ES Module)');
-}).catch(e => {
+}).catch((e) => {
   setUIState('ERROR');
   console.error('Init failed:', e);
 });

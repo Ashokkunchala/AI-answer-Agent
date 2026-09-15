@@ -49,9 +49,13 @@ export class AudioVisualizer {
     const rect = this.canvas.getBoundingClientRect();
     this.canvas.width = rect.width * dpr;
     this.canvas.height = rect.height * dpr;
-    this.ctx.scale(dpr, dpr);
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.width = rect.width;
     this.height = rect.height;
+    // Pre-allocate frequency data buffer
+    if (this.analyser) {
+      this._dataBuffer = new Uint8Array(this.analyser.frequencyBinCount);
+    }
   }
 
   _clear() {
@@ -60,12 +64,15 @@ export class AudioVisualizer {
   }
 
   _draw() {
-    if (!this.isActive || !this.analyser) return;
+    if (!this.isActive || !this.analyser || !this.ctx) return;
     this.animationFrame = requestAnimationFrame(() => this._draw());
 
     const bufferLength = this.analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    this.analyser.getByteFrequencyData(dataArray);
+    if (!this._dataBuffer || this._dataBuffer.length !== bufferLength) {
+      this._dataBuffer = new Uint8Array(bufferLength);
+    }
+    this.analyser.getByteFrequencyData(this._dataBuffer);
+    const dataArray = this._dataBuffer;
 
     // Calculate RMS level for external callbacks
     let sum = 0;
