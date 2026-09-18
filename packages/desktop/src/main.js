@@ -1232,6 +1232,7 @@ ipcMain.handle('get-audio-engine-status', (event) => {
 // ───────────────────────────────────────────────────────────────────────
 const { VoiceService } = require('./voice/voice-service');
 let voiceService = null;
+let voiceServiceInitPromise = null;
 
 function getVoiceService() {
   if (voiceService) return voiceService;
@@ -1277,14 +1278,16 @@ function getVoiceService() {
       }
     },
   });
-  voiceService.init().catch((err) => {
+  voiceServiceInitPromise = voiceService.init().catch((err) => {
     log('[Voice] init error:', err && err.message || err);
+    throw err;
   });
   return voiceService;
 }
 
 async function ensureVoiceService() {
   const svc = getVoiceService();
+  if (voiceServiceInitPromise) await voiceServiceInitPromise;
   return svc;
 }
 
