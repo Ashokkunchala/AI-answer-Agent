@@ -781,7 +781,12 @@ function populateSources(src) {
   for (const s of currentSources) {
     const opt = document.createElement('option');
     opt.value = s.id;
-    opt.textContent = s.kind === 'mic' ? s.name : (s.kind === 'system' ? s.name : '🔊 ' + s.name);
+    const label = s.kind === 'mic'
+      ? s.name
+      : (s.kind === 'system'
+        ? s.name
+        : '🔊 ' + s.name + (s.recommended ? ' — preferred for meeting audio' : ''));
+    opt.textContent = label;
     opt.selected = s.id === selectedId;
     sel.appendChild(opt);
   }
