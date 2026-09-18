@@ -353,7 +353,7 @@ var ALL_MODELS = [];
 var ALL_TASKS = [];
 var chatHistory = [];   // multi-turn memory: [{role, content}]
 var pendingSnips = [];
-var DASHBOARD_ADMIN_KEY = sessionStorage.getItem('devopsDashboardAdminKey') || '';
+var DASHBOARD_ADMIN_KEY = '';
 
 function $(id) { return document.getElementById(id); }
 
@@ -364,8 +364,8 @@ function escapeHtml(s) {
 }
 
 // Dashboard chat remains direct-use, but key administration requires a
-// separate admin secret. The secret is kept only in sessionStorage and is
-// never embedded in the generated page source.
+// separate admin secret. The secret is kept only in page memory and is never
+// embedded in the generated page source.
 async function api(method, path, body, retried) {
   var headers = { 'Content-Type': 'application/json' };
   if (DASHBOARD_ADMIN_KEY && /^\/v1\/keys(?:$|\/)/.test(path)) {
@@ -380,7 +380,6 @@ async function api(method, path, body, retried) {
     var entered = window.prompt('Enter the dashboard admin secret (DASHBOARD_ADMIN_KEY):');
     if (entered) {
       DASHBOARD_ADMIN_KEY = entered.trim();
-      sessionStorage.setItem('devopsDashboardAdminKey', DASHBOARD_ADMIN_KEY);
       return api(method, path, body, true);
     }
   }
