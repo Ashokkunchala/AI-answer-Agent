@@ -13,6 +13,7 @@ import { handleSTTStream } from './providers/stt-stream.js';
 import { concatenateChunks, base64ToBytes, jsonResponse } from '../../../shared/utils.js';
 
 const PUBLIC_PATHS = ['/', '/health', '/v1/models', '/v1/tasks'];
+const ADMIN_PATHS = ['/v1/keys', '/v1/keys/revoke'];
 const VALID_TIERS = ['standard', 'premium'];
 
 const RATE_WINDOW_MS = 60 * 1000;
@@ -113,6 +114,21 @@ async function handleTranscription(request, env) {
 // Auth middleware — public endpoints stay public, while protected API traffic
 // requires a key. The embedded dashboard remains usable without a key only
 // for same-origin browser requests, preserving the existing direct-use UI flow.
+function extractBearerToken(request) {
+  const auth = request.headers.get('Authorization') || '';
+  return auth.startsWith('Bearer ') ? auth.slice(7).trim() : null;
+}
+
+function isDashboardAdminRequest(request, env) {
+  const configured = typeof env.DASHBOARD_ADMIN_KEY === 'string' ? env.DASHBOARD_ADMIN_KEY : '';
+  const provided = extractBearerToken(request);
+  return !!configured && !!provided && timingSafeEqual(provided, configured);
+}
+
+function isAdminPath(path) {
+  return ADMIN_PATHS.includes(path);
+}
+
 function isSameOriginDashboardRequest(request) {
   const origin = request.headers.get('Origin');
   if (origin) {
@@ -127,6 +143,17 @@ function isSameOriginDashboardRequest(request) {
 
 async function authenticate(request, env, path) {
   if (PUBLIC_PATHS.includes(path)) return null;
+
+  if (isAdminPath(path)) {
+    if (!env.DASHBOARD_ADMIN_KEY) {
+      return jsonResponse({ error: 'Dashboard administration is not configured. Set DASHBOARD_ADMIN_KEY as a Worker secret.' }, 503, request);
+    }
+    if (!isDashboardAdminRequest(request, env)) {
+      return jsonResponse({ error: 'Dashboard administrator authentication required.' }, 401, request);
+    }
+    request._keyData = { id: 'admin', name: 'dashboard-admin', tier: 'admin', rate_limit: 60 };
+    return null;
+  }
 
   const apiKey = extractApiKey(request);
 
@@ -340,7 +367,7 @@ export default {
           auth: 'API key required (except /health, /v1/models, /v1/tasks, /dashboard)',
           auth_header: 'Authorization: Bearer dvops_<id>_<secret>',
           rate_limiting: 'Per-key rate_limit metadata is enforced by clients; anonymous external API access is disabled.',
-          key_management: 'Direct-use UI: no key needed in the dashboard. API keys are for external tool integrations.',
+          key_management: 'Dashboard key administration requires DASHBOARD_ADMIN_KEY. API keys are for external tool integrations.',
           endpoints: {
             'POST /v1/chat/completions': 'OpenAI-compatible chat (auth required)',
             'POST /v1/audio/transcriptions': 'Speech-to-text (multipart or base64 JSON, auth required)',
@@ -349,7 +376,7 @@ export default {
             'GET /v1/models': `List all ${modelCount} models (public)`,
             'GET /v1/tasks': 'List task types (public)',
             'POST /v1/route': 'Preview routing (auth required)',
-            'POST /v1/keys': 'Create API key (same-origin dashboard or authenticated request)',
+            'POST /v1/keys': 'Create API key (dashboard admin authentication required)',
             'GET /v1/keys': 'List keys',
             'POST /v1/keys/revoke': 'Revoke a key by id',
             'DELETE /v1/keys': 'Delete a key by id',
@@ -417,7 +444,7 @@ export default {
 
       // List API keys (requires auth)
       if (path === '/v1/keys' && request.method === 'GET') {
-        if (!request._keyData || request._keyData.id === 'anon') {
+        if (!request._keyData || !['admin'].includes(request._keyData.id)) {
           return jsonResponse({ error: 'Authentication required to list keys' }, 401, request);
         }
         const keys = await listApiKeys(env);
@@ -588,7 +615,7 @@ export default {
           'GET /dashboard': 'API Key Management UI (public)',
           'GET /v1/models': 'List models (public)',
           'GET /v1/tasks': 'List tasks (public)',
-          'POST /v1/keys': 'Create key (no auth â€” for external tools)',
+          'POST /v1/keys': 'Create key (dashboard admin authentication required)',
           'GET /v1/keys': 'List keys',
           'POST /v1/keys/revoke': 'Revoke key by id',
           'DELETE /v1/keys': 'Delete key by id',
