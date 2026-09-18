@@ -236,7 +236,9 @@ async function handleVoiceSocket(webSocket, env) {
           webSocket.send(JSON.stringify({ error: 'Start a session before sending audio' }));
           return;
         }
-        await appendVoiceAudio(webSocket, session, event.data, env);
+        session.queue = session.queue
+          .then(() => appendVoiceAudio(webSocket, session, event.data, env));
+        await session.queue;
         return;
       }
 
@@ -248,6 +250,7 @@ async function handleVoiceSocket(webSocket, env) {
         sessions.set(webSocket, {
           chunks: [],
           totalBytes: 0,
+          queue: Promise.resolve(),
           startTime: Date.now(),
           lastAt: Date.now(),
           model: data.model || 'auto',
@@ -264,7 +267,9 @@ async function handleVoiceSocket(webSocket, env) {
           return;
         }
 
-        // Concatenate all chunks and transcribe
+        // Wait for queued audio work so the final transcript contains every
+        // frame and multiple expensive transcription calls cannot overlap.
+        await session.queue;
         const audioBytes = concatenateChunks(session.chunks);
         sessions.delete(webSocket);
 
@@ -295,7 +300,9 @@ async function handleVoiceSocket(webSocket, env) {
           return;
         }
         const audioBytes = base64ToBytes(data.audio);
-        await appendVoiceAudio(webSocket, session, audioBytes, env);
+        session.queue = session.queue
+          .then(() => appendVoiceAudio(webSocket, session, audioBytes, env));
+        await session.queue;
       }
     } catch (error) {
       console.error(`[Voice Socket] Error processing message: ${error}`);
@@ -372,7 +379,7 @@ export default {
           dashboard: url.origin + '/dashboard',
           auth: 'API key required (except /health, /v1/models, /v1/tasks, /dashboard)',
           auth_header: 'Authorization: Bearer dvops_<id>_<secret>',
-          rate_limiting: 'Per-key rate_limit metadata is enforced by clients; anonymous external API access is disabled.',
+          rate_limiting: 'Per-key rate_limit metadata is enforced server-side per Worker isolate; anonymous external API access is disabled.',
           key_management: 'Dashboard key administration requires DASHBOARD_ADMIN_KEY. API keys are for external tool integrations.',
           endpoints: {
             'POST /v1/chat/completions': 'OpenAI-compatible chat (auth required)',
