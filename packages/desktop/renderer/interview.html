@@ -644,9 +644,29 @@ async function initVoiceBridge() {
 function onVoiceState(st) {
   if (!st) return;
   setUIState(st.session || 'IDLE');
-  $('mMic').textContent = isListening ? 'ON' : 'OFF';
-  $('mStt').textContent = st.stt && st.stt.connected ? 'Connected' : 'Disconnected';
+  const audio = st.audio || {};
+  const capture = audio.capture || {};
+  const flow = audio.flow || {};
+  const selected = audio.source && audio.source.selected;
+  const sourceLabel = selected
+    ? (selected.kind === 'mic' ? 'MIC' : selected.kind === 'process' ? 'APP' : 'SYSTEM')
+    : 'NO SOURCE';
+  $('mMic').textContent = isListening
+    ? sourceLabel + (flow.flow === 'flowing' ? ' • ' + (flow.processedFrames || 0) : ' • NO DATA')
+    : 'OFF';
+  $('mStt').textContent = st.stt && st.stt.connected
+    ? 'Connected'
+    : 'Disconnected';
+  $('mVad').textContent = flow.lastLevel != null
+    ? (st.session === 'SPEAKING' ? 'Speech' : Number(flow.lastLevel).toFixed(3))
+    : '--';
   $('mAi').textContent = st.ai && st.ai.warm ? 'Warm' : 'Cold';
+
+  // Surface the actual failure boundary instead of showing a misleading
+  // "connected" state when the capture source has produced no frames.
+  if (isListening && capture.state === 'capturing' && flow.flow === 'no-data' && st.stt && st.stt.connected) {
+    updateTranscriptDisplay('', 'Audio source connected, but no audio frames are arriving. Check the selected output/microphone and Windows audio permissions.');
+  }
   if (st.session === 'READY' || st.session === 'LISTENING') {
     if (!isListening) {
       updateTranscriptDisplay('', 'Voice engine ready. Press the mic button to start listening.');
