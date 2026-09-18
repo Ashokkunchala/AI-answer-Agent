@@ -111,8 +111,11 @@ class AudioSourceManager {
     list.push({
       id: 'system',
       kind: SRC_KIND.SYSTEM,
-      name: 'System Output (Default device)',
+      name: defaultRender && defaultRender.name
+        ? 'System Output (Default: ' + defaultRender.name + ')'
+        : 'System Output (Default device)',
       device: defaultRender ? { id: defaultRender.id, name: defaultRender.name, bluetooth: !!defaultRender.bluetooth } : null,
+      renderDeviceId: defaultRender ? defaultRender.id : null,
     });
 
     // Expose every active Windows capture endpoint, not only the default mic.
@@ -146,6 +149,7 @@ class AudioSourceManager {
         pid: p.pid,
         name: p.title || p.processName || 'PID ' + p.pid,
         processName: p.processName,
+        recommended: this.knownApps.includes(String(p.processName || '').toLowerCase()),
       });
     }
     return list;
@@ -165,6 +169,8 @@ class AudioSourceManager {
       pid: src.pid || null,
       deviceId: src.deviceId || null,
       name: src.name,
+      renderDeviceId: src.renderDeviceId || (src.device && src.device.id) || null,
+      recommended: !!src.recommended,
     };
     this.selectedState = prev ? SRC_STATE.SWITCHING : SRC_STATE.CONNECTING;
     if (this.onSourcesChanged) {
