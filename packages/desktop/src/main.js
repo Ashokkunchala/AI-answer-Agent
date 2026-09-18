@@ -1040,6 +1040,7 @@ ipcMain.handle('open-settings', (event) => { assertTrustedSender(event); return 
 ipcMain.handle('toggle-interview-panel', (event) => { assertTrustedSender(event); return toggleInterviewPanel(); });
 ipcMain.handle('set-interview-position', (event, pos) => {
   assertTrustedSender(event);
+  assertTrustedSender(event);
   if (interviewPanel && !interviewPanel.isDestroyed()) {
     interviewPanel.setPosition(pos.x, pos.y);
   }
@@ -1297,6 +1298,7 @@ ipcMain.handle('voice:get-sources', async (event) => {
 });
 
 ipcMain.handle('voice:select-source', async (event, id) => {
+  assertTrustedSender(event);
   const svc = await ensureVoiceService();
   return svc.selectSource(id);
 });
@@ -1333,6 +1335,7 @@ ipcMain.handle('voice:get-latency', (event) => {
 });
 
 ipcMain.handle('voice:report-ui-latency', (event, ms) => {
+  assertTrustedSender(event);
   if (!voiceService) return;
   voiceService.reportUiLatency(typeof ms === 'number' ? ms : NaN);
 });
@@ -1448,6 +1451,7 @@ ipcMain.handle('clear-history', async (event) => {
 });
 
 ipcMain.handle('export-history', async (event, { format }) => {
+  assertTrustedSender(event);
   assertTrustedSender(event);
   try {
     const history = loadHistoryFromFile();
