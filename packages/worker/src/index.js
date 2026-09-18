@@ -15,6 +15,25 @@ import { concatenateChunks, base64ToBytes, jsonResponse } from '../../../shared/
 const PUBLIC_PATHS = ['/', '/health', '/v1/models', '/v1/tasks'];
 const VALID_TIERS = ['standard', 'premium'];
 
+const RATE_WINDOW_MS = 60 * 1000;
+const rateWindows = new Map(); // isolate-local guard; KV remains the source of key metadata
+
+function checkRateLimit(keyData) {
+  const limit = Number(keyData?.rate_limit || 0);
+  if (!Number.isFinite(limit) || limit <= 0 || !keyData?.id || keyData.id === 'anon') return null;
+
+  const now = Date.now();
+  const existing = rateWindows.get(keyData.id);
+  const timestamps = existing ? existing.filter((t) => now - t < RATE_WINDOW_MS) : [];
+  if (timestamps.length >= limit) {
+    rateWindows.set(keyData.id, timestamps);
+    return Math.ceil((RATE_WINDOW_MS - (now - timestamps[0])) / 1000);
+  }
+  timestamps.push(now);
+  rateWindows.set(keyData.id, timestamps);
+  return null;
+}
+
 function normalizePath(pathname) {
   if (pathname.length > 1) return pathname.replace(/\/+$/, '') || '/';
   return pathname;
@@ -258,6 +277,14 @@ export default {
       // ── Auth check ──
       const authDenied = await authenticate(request, env, path);
       if (authDenied) return authDenied;
+
+      const retryAfter = checkRateLimit(request._keyData);
+      if (retryAfter !== null) {
+        return jsonResponse({
+          error: 'Rate limit exceeded',
+          retry_after_seconds: retryAfter,
+        }, 429, request, { 'Retry-After': String(retryAfter) });
+      }
       // â”€â”€â”€ Health (public) â”€â”€â”€
       if (path === '/' || path === '/health') {
         const modelCount = Object.keys(MODELS).length;
