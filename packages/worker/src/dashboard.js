@@ -1,7 +1,8 @@
 // Dashboard HTML - Served at /dashboard
 // Single control center: chat, playground (all model types), keys, models, tasks, usage, docs.
-// Direct mode: no API key needed to use the dashboard — requests run under the
-// anonymous identity. API keys exist only for external tool integrations.
+// Direct-use chat does not require an API key. Key administration is protected
+// by the DASHBOARD_ADMIN_KEY Worker secret; generated API keys are for external
+// tool integrations.
 // Security notes: all dynamic values are HTML-escaped before innerHTML.
 export const DASHBOARD_HTML = `<!DOCTYPE html>
 <html lang="en">
