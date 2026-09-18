@@ -131,7 +131,12 @@ this.ai = this.deps.ai || new AiClient({
     this._restartAttempts = 0;
     this._restartTimer = null;
     this._vadTimer = null;
+    this._audioHealthTimer = null;
     this._lastDeviceChange = null;
+    this.audioFramesFed = 0;
+    this.audioFramesRejected = 0;
+    this.lastAudioFrameAt = 0;
+    this.lastAudioLevel = 0;
     this._stopping = false;
     this._sessionActive = false;
 
@@ -174,6 +179,10 @@ this.ai = this.deps.ai || new AiClient({
     this.turnMan.reset();
     this._ask = null;
     this._firstPartialPerTurn = new Set();
+    this.audioFramesFed = 0;
+    this.audioFramesRejected = 0;
+    this.lastAudioFrameAt = 0;
+    this.lastAudioLevel = 0;
     this.phase = PHASE.STARTING;
     this.#broadcastState();
 
@@ -228,6 +237,22 @@ this.ai = this.deps.ai || new AiClient({
     this._vadTimer = setInterval(() => this.vad.tick(), 30);
     if (this._vadTimer.unref) this._vadTimer.unref();
 
+    // Detect a capture device that reports started but never delivers data.
+    this._audioHealthTimer = setTimeout(() => {
+      this._audioHealthTimer = null;
+      if (!this._sessionActive) return;
+      const snap = this.capture.snapshot();
+      if (snap.state === CAPTURE_STATE.CAPTURING && snap.chunksReceived === 0) {
+        this.#reportError({
+          type: 'capture',
+          code: 'AUDIO_NO_DATA',
+          userMessage: 'Audio capture started, but Windows has delivered no audio data. Check the selected audio source and Windows output/microphone device.'
+        });
+        this.#broadcastState();
+      }
+    }, 2500);
+    if (this._audioHealthTimer.unref) this._audioHealthTimer.unref();
+
     return { ok: captureResult.ok, error: captureResult.ok ? undefined : captureResult.error };
   }
 
@@ -249,6 +274,7 @@ this.ai = this.deps.ai || new AiClient({
     this._sessionActive = false;
     this.phase = PHASE.SESSION_ENDED;
     if (this._vadTimer) { clearInterval(this._vadTimer); this._vadTimer = null; }
+    if (this._audioHealthTimer) { clearTimeout(this._audioHealthTimer); this._audioHealthTimer = null; }
     if (this._restartTimer) { clearTimeout(this._restartTimer); this._restartTimer = null; }
     try { this.ai.cancel(); } catch (_) { /* */ }
     this.stt.stopSession();
@@ -338,7 +364,11 @@ this.ai = this.deps.ai || new AiClient({
     // acoustics never get cut. sendAudio buffers internally while the
     // socket is (re)connecting so the utterance's opening words survive.
     if ((this._gateOpen || frame.speech) && this.listeningEnabled) {
-      this.stt.sendAudio(frame.pcm);
+      const accepted = this.stt.sendAudio(frame.pcm);
+      if (accepted) this.audioFramesFed++;
+      else this.audioFramesRejected++;
+      this.lastAudioFrameAt = Date.now();
+      this.lastAudioLevel = Number.isFinite(frame.level) ? frame.level : 0;
       this._gateOpen = true;
     }
 
@@ -792,7 +822,21 @@ this.ai = this.deps.ai || new AiClient({
         session: this.phase,
         sessionId: this.sessionId,
         listening: this.listeningEnabled,
-        audio: { source: srcSnap, capture: capSnap },
+        audio: {
+          source: srcSnap,
+          capture: capSnap,
+          flow: {
+            framesFedToStt: this.audioFramesFed,
+            framesRejectedByStt: this.audioFramesRejected,
+            lastFrameAt: this.lastAudioFrameAt || null,
+            idleMs: this.lastAudioFrameAt ? Date.now() - this.lastAudioFrameAt : null,
+            lastLevel: this.lastAudioLevel,
+            sourceChunks: capSnap.chunksReceived,
+            processedFrames: capSnap.framesProcessed,
+            droppedChunks: capSnap.framesDropped,
+            flow: capSnap.framesProcessed > 0 ? 'flowing' : 'no-data',
+          },
+        },
         stt: sttSnap,
         turn: turnSnap,
         transcript: this.transcript.snapshot(),
