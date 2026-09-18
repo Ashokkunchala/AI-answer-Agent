@@ -131,6 +131,11 @@ async function authenticate(request, env, path) {
   const apiKey = extractApiKey(request);
 
   if (!apiKey) {
+    // Voice sockets are never part of the dashboard direct-use flow and must
+    // always carry an explicit API key, including same-origin browser clients.
+    if (path === '/voice-socket') {
+      return jsonResponse({ error: 'Authentication required for voice WebSocket' }, 401, request);
+    }
     if (isSameOriginDashboardRequest(request)) {
       request._keyData = { id: 'anon', name: 'dashboard', tier: 'dashboard' };
       return null;
