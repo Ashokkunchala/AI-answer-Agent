@@ -91,17 +91,34 @@ async function handleTranscription(request, env) {
   }, 200, request);
 }
 
-// Auth middleware â€” returns null if allowed, or a Response if denied.
-// Direct-use mode: requests WITHOUT an API key run as the shared anonymous identity.
-// Rate limiting is disabled (unlimited requests).
+// Auth middleware — public endpoints stay public, while protected API traffic
+// requires a key. The embedded dashboard remains usable without a key only
+// for same-origin browser requests, preserving the existing direct-use UI flow.
+function isSameOriginDashboardRequest(request) {
+  const origin = request.headers.get('Origin');
+  if (origin) {
+    try {
+      return new URL(origin).origin === new URL(request.url).origin;
+    } catch (_) {
+      return false;
+    }
+  }
+  return request.headers.get('Sec-Fetch-Site') === 'same-origin';
+}
+
 async function authenticate(request, env, path) {
   if (PUBLIC_PATHS.includes(path)) return null;
 
   const apiKey = extractApiKey(request);
 
   if (!apiKey) {
-    request._keyData = { id: 'anon', name: 'anonymous', tier: 'anonymous' };
-    return null;
+    if (isSameOriginDashboardRequest(request)) {
+      request._keyData = { id: 'anon', name: 'dashboard', tier: 'dashboard' };
+      return null;
+    }
+    return jsonResponse({
+      error: 'Authentication required. Use Authorization: Bearer <dvops_api_key>.',
+    }, 401, request);
   }
 
   const keyData = await validateApiKey(apiKey, env);
@@ -239,11 +256,8 @@ export default {
       }
 
       // ── Auth check ──
-      // Allow WebSocket upgrade to /voice-socket without authentication (same as other public paths)
-      if (!(path === '/voice-socket' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket')) {
-        const authDenied = await authenticate(request, env, path);
-        if (authDenied) return authDenied;
-      }
+      const authDenied = await authenticate(request, env, path);
+      if (authDenied) return authDenied;
       // â”€â”€â”€ Health (public) â”€â”€â”€
       if (path === '/' || path === '/health') {
         const modelCount = Object.keys(MODELS).length;
@@ -256,7 +270,7 @@ export default {
           dashboard: url.origin + '/dashboard',
           auth: 'API key required (except /health, /v1/models, /v1/tasks, /dashboard)',
           auth_header: 'Authorization: Bearer dvops_<id>_<secret>',
-          rate_limiting: 'Disabled â€” unlimited requests for keys and anonymous use',
+          rate_limiting: 'Per-key rate_limit metadata is enforced by clients; anonymous external API access is disabled.',
           key_management: 'Direct-use UI: no key needed in the dashboard. API keys are for external tool integrations.',
           endpoints: {
             'POST /v1/chat/completions': 'OpenAI-compatible chat (auth required)',
@@ -266,7 +280,7 @@ export default {
             'GET /v1/models': `List all ${modelCount} models (public)`,
             'GET /v1/tasks': 'List task types (public)',
             'POST /v1/route': 'Preview routing (auth required)',
-            'POST /v1/keys': 'Create API key (no auth â€” for external tools)',
+            'POST /v1/keys': 'Create API key (same-origin dashboard or authenticated request)',
             'GET /v1/keys': 'List keys',
             'POST /v1/keys/revoke': 'Revoke a key by id',
             'DELETE /v1/keys': 'Delete a key by id',
@@ -309,7 +323,7 @@ export default {
         });
       }
 
-      // â”€â”€â”€ Create API key (no auth needed â€” keys are for external tools) â”€â”€â”€
+      // â”€â”€â”€ Create API key (same-origin dashboard or authenticated request) â”€â”€â”€
       if (path === '/v1/keys' && request.method === 'POST') {
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
