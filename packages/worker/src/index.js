@@ -573,13 +573,11 @@ export default {
 
 // Reflect the request Origin instead of wildcard * (works with credentials/localStorage flows)
 function corsHeaders(request = null) {
-  const origin = request ? request.headers.get('Origin') : null;
   return {
-    'Access-Control-Allow-Origin': origin || '*',
+    'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Max-Age': '86400',
-    'Vary': 'Origin',
   };
 }
 
