@@ -24,9 +24,15 @@ function checkRateLimit(keyData) {
   if (!Number.isFinite(limit) || limit <= 0 || !keyData?.id || keyData.id === 'anon') return null;
 
   const now = Date.now();
+  if (rateWindows.size > 10000) {
+    for (const [id, timestamps] of rateWindows) {
+      if (!timestamps.some((t) => now - t < RATE_WINDOW_MS)) rateWindows.delete(id);
+    }
+  }
+  const effectiveLimit = Math.min(limit, 1000);
   const existing = rateWindows.get(keyData.id);
   const timestamps = existing ? existing.filter((t) => now - t < RATE_WINDOW_MS) : [];
-  if (timestamps.length >= limit) {
+  if (timestamps.length >= effectiveLimit) {
     rateWindows.set(keyData.id, timestamps);
     return Math.ceil((RATE_WINDOW_MS - (now - timestamps[0])) / 1000);
   }
