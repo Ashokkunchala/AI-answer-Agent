@@ -432,6 +432,10 @@ class StreamingSTT extends EventEmitter {
 
   _teardown() {
     this.#stopKeepalive();
+    if (this._configureTimer) {
+      clearTimeout(this._configureTimer);
+      this._configureTimer = null;
+    }
     if (this._ws) {
       try {
         this._ws.removeAllListeners();
