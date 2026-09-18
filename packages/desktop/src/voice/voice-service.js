@@ -182,6 +182,10 @@ this.ai = this.deps.ai || new AiClient({
     this.turnMan.reset();
     this._ask = null;
     this._firstPartialPerTurn = new Set();
+    this.audioFramesFed = 0;
+    this.audioFramesRejected = 0;
+    this.lastAudioFrameAt = 0;
+    this.lastAudioLevel = 0;
     this.phase = PHASE.STARTING;
     this.#broadcastState();
 
