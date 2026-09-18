@@ -24,6 +24,7 @@ export class DeepgramProvider extends SpeechToTextProvider {
     this.lastActivity = Date.now();
     this._destroyed = false;
     this._reconnecting = false;
+    this._manualDisconnect = false;
   }
 
   get apiKey() { return this.config.apiKey || ''; }
@@ -54,6 +55,10 @@ export class DeepgramProvider extends SpeechToTextProvider {
   }
 
   async connect() {
+    if (this._destroyed && this._manualDisconnect) {
+      // A deliberate disconnect can be followed by a fresh connect/start.
+      this._destroyed = false;
+    }
     if (this._destroyed) throw new Error('Provider destroyed');
     if (!this.apiKey) throw new Error('Deepgram API key required');
     if (this.connected && this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -61,12 +66,16 @@ export class DeepgramProvider extends SpeechToTextProvider {
     }
 
     this._reconnecting = false;
+    this._manualDisconnect = false;
 
     return new Promise((resolve, reject) => {
       try {
         const url = this.endpoint;
         console.log(`[DeepgramProvider] Connecting to ${this.model}...`);
-        this.ws = new WebSocket(url);
+        // Browser/Electron WebSocket does not allow arbitrary Authorization
+        // headers. Deepgram supports the "token, <API_KEY>" subprotocol for
+        // client-side WebSocket authentication.
+        this.ws = new WebSocket(url, ['token', this.apiKey]);
         this.ws.binaryType = 'arraybuffer';
 
         const timeout = setTimeout(() => {
@@ -118,6 +127,7 @@ export class DeepgramProvider extends SpeechToTextProvider {
   }
 
   async disconnect() {
+    this._manualDisconnect = true;
     this._destroyed = true;
     this._stopPing();
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
