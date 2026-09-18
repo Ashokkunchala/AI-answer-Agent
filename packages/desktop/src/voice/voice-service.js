@@ -130,10 +130,19 @@ this.ai = this.deps.ai || new AiClient({
     this._sttConnectedEver = false;
     this._restartAttempts = 0;
     this._restartTimer = null;
+    this._audioHealthTimer = null;
     this._vadTimer = null;
     this._lastDeviceChange = null;
     this._stopping = false;
     this._sessionActive = false;
+
+    // Audio-flow diagnostics. These counters distinguish a healthy source
+    // from a healthy STT socket; "connected" alone must never imply audio is
+    // actually reaching the STT provider.
+    this.audioFramesFed = 0;
+    this.audioFramesRejected = 0;
+    this.lastAudioFrameAt = 0;
+    this.lastAudioLevel = 0;
 
     // Active AI request bookkeeping (used for interruption + stale-answer drop).
     this._ask = null;                   // { turnId, question, status, asked, active, wasCancelled }
@@ -174,6 +183,10 @@ this.ai = this.deps.ai || new AiClient({
     this.turnMan.reset();
     this._ask = null;
     this._firstPartialPerTurn = new Set();
+    this.audioFramesFed = 0;
+    this.audioFramesRejected = 0;
+    this.lastAudioFrameAt = 0;
+    this.lastAudioLevel = 0;
     this.phase = PHASE.STARTING;
     this.#broadcastState();
 
@@ -226,6 +239,25 @@ this.ai = this.deps.ai || new AiClient({
 
     // 4) VAD ticking.
     this._vadTimer = setInterval(() => this.vad.tick(), 30);
+
+    // WASAPI can report "started" even when the native source produces no
+    // chunks. Detect that early and surface the real boundary to the UI
+    // instead of leaving the user with a permanently green "Connected" state.
+    if (this._audioHealthTimer) clearTimeout(this._audioHealthTimer);
+    this._audioHealthTimer = setTimeout(() => {
+      this._audioHealthTimer = null;
+      if (!this._sessionActive) return;
+      const snap = this.capture.snapshot();
+      if (snap.state === CAPTURE_STATE.CAPTURING && snap.chunksReceived === 0) {
+        this.#reportError({
+          type: 'capture',
+          code: 'AUDIO_NO_DATA',
+          userMessage: 'Audio capture started, but Windows has delivered no audio data. Check the selected audio source and Windows output/microphone device.'
+        });
+        this.#broadcastState();
+      }
+    }, 2500);
+    if (this._audioHealthTimer.unref) this._audioHealthTimer.unref();
     if (this._vadTimer.unref) this._vadTimer.unref();
 
     return { ok: captureResult.ok, error: captureResult.ok ? undefined : captureResult.error };
@@ -250,6 +282,7 @@ this.ai = this.deps.ai || new AiClient({
     this.phase = PHASE.SESSION_ENDED;
     if (this._vadTimer) { clearInterval(this._vadTimer); this._vadTimer = null; }
     if (this._restartTimer) { clearTimeout(this._restartTimer); this._restartTimer = null; }
+    if (this._audioHealthTimer) { clearTimeout(this._audioHealthTimer); this._audioHealthTimer = null; }
     try { this.ai.cancel(); } catch (_) { /* */ }
     this.stt.stopSession();
     this.stt.removeAllListeners();
@@ -338,7 +371,11 @@ this.ai = this.deps.ai || new AiClient({
     // acoustics never get cut. sendAudio buffers internally while the
     // socket is (re)connecting so the utterance's opening words survive.
     if ((this._gateOpen || frame.speech) && this.listeningEnabled) {
-      this.stt.sendAudio(frame.pcm);
+      const accepted = this.stt.sendAudio(frame.pcm);
+      if (accepted) this.audioFramesFed++;
+      else this.audioFramesRejected++;
+      this.lastAudioFrameAt = Date.now();
+      this.lastAudioLevel = Number.isFinite(frame.level) ? frame.level : 0;
       this._gateOpen = true;
     }
 
@@ -787,12 +824,25 @@ this.ai = this.deps.ai || new AiClient({
     const sttSnap = this.stt.snapshot();
     const latencyStats = this.latency.stats();
     const turnSnap = this.turnMan.snapshot();
+    const now = Date.now();
+    const capture = capSnap;
+    const audioFlow = {
+      framesFedToStt: this.audioFramesFed,
+      framesRejectedByStt: this.audioFramesRejected,
+      lastFrameAt: this.lastAudioFrameAt || null,
+      idleMs: this.lastAudioFrameAt ? now - this.lastAudioFrameAt : null,
+      lastLevel: this.lastAudioLevel,
+      sourceChunks: capture.chunksReceived,
+      processedFrames: capture.framesProcessed,
+      droppedChunks: capture.framesDropped,
+      flow: capture.framesProcessed > 0 ? 'flowing' : 'no-data',
+    };
     return {
       state: {
         session: this.phase,
         sessionId: this.sessionId,
         listening: this.listeningEnabled,
-        audio: { source: srcSnap, capture: capSnap },
+        audio: { source: srcSnap, capture: capSnap, flow: audioFlow },
         stt: sttSnap,
         turn: turnSnap,
         transcript: this.transcript.snapshot(),
