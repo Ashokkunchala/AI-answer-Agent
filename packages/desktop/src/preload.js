@@ -171,12 +171,42 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setWindowTitle: (title) => ipcRenderer.invoke('set-window-title', title),
   getStealthStatus: () => ipcRenderer.invoke('get-stealth-status'),
 
-  onScreenCaptured: (callback) => ipcRenderer.on('screen-captured', (event, path) => callback(path)),
-  onStatusUpdate: (callback) => ipcRenderer.on('status-update', (event, status) => callback(status)),
-  onAnswerReady: (callback) => ipcRenderer.on('answer-ready', (event, answer) => callback(answer)),
-  onAnswerStream: (callback) => ipcRenderer.on('answer-stream', (event, data) => callback(data)),
-  onToggleMic: (callback) => ipcRenderer.on('toggle-mic', (event) => callback(event)),
-  onResumeUpdated: (callback) => ipcRenderer.on('resume-updated', (event) => callback(event)),
-  onJobDescUpdated: (callback) => ipcRenderer.on('job-desc-updated', (event) => callback(event)),
+  // Renderer event subscriptions return unsubscribe functions so repeated
+  // panel mounts/navigation cannot accumulate IPC listeners.
+  onScreenCaptured: (callback) => {
+    const listener = (event, path) => callback(path);
+    ipcRenderer.on('screen-captured', listener);
+    return () => ipcRenderer.removeListener('screen-captured', listener);
+  },
+  onStatusUpdate: (callback) => {
+    const listener = (event, status) => callback(status);
+    ipcRenderer.on('status-update', listener);
+    return () => ipcRenderer.removeListener('status-update', listener);
+  },
+  onAnswerReady: (callback) => {
+    const listener = (event, answer) => callback(answer);
+    ipcRenderer.on('answer-ready', listener);
+    return () => ipcRenderer.removeListener('answer-ready', listener);
+  },
+  onAnswerStream: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('answer-stream', listener);
+    return () => ipcRenderer.removeListener('answer-stream', listener);
+  },
+  onToggleMic: (callback) => {
+    const listener = (event) => callback(event);
+    ipcRenderer.on('toggle-mic', listener);
+    return () => ipcRenderer.removeListener('toggle-mic', listener);
+  },
+  onResumeUpdated: (callback) => {
+    const listener = (event) => callback(event);
+    ipcRenderer.on('resume-updated', listener);
+    return () => ipcRenderer.removeListener('resume-updated', listener);
+  },
+  onJobDescUpdated: (callback) => {
+    const listener = (event) => callback(event);
+    ipcRenderer.on('job-desc-updated', listener);
+    return () => ipcRenderer.removeListener('job-desc-updated', listener);
+  },
   getWindowList: () => ipcRenderer.invoke('get-window-list'),
 });
