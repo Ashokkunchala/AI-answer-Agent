@@ -456,7 +456,12 @@ export class VoiceService {
     if (this.sttProvider && this.sttProvider.isConnected && this.sttProvider.isConnected()) {
       this.metrics.chunkCount++;
       const int16 = frame.pcm instanceof ArrayBuffer ? new Int16Array(frame.pcm) : frame.pcm;
-      this.sttProvider.sendAudio(int16.buffer);
+      if (ArrayBuffer.isView(int16)) {
+        const exact = int16.buffer.slice(int16.byteOffset, int16.byteOffset + int16.byteLength);
+        this.sttProvider.sendAudio(exact);
+      } else if (int16 instanceof ArrayBuffer) {
+        this.sttProvider.sendAudio(int16);
+      }
     }
   }
 
