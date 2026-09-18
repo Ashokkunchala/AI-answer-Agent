@@ -130,6 +130,7 @@ this.ai = this.deps.ai || new AiClient({
     this._sttConnectedEver = false;
     this._restartAttempts = 0;
     this._restartTimer = null;
+    this._audioHealthTimer = null;
     this._vadTimer = null;
     this._lastDeviceChange = null;
     this._stopping = false;
@@ -238,6 +239,25 @@ this.ai = this.deps.ai || new AiClient({
 
     // 4) VAD ticking.
     this._vadTimer = setInterval(() => this.vad.tick(), 30);
+
+    // WASAPI can report "started" even when the native source produces no
+    // chunks. Detect that early and surface the real boundary to the UI
+    // instead of leaving the user with a permanently green "Connected" state.
+    if (this._audioHealthTimer) clearTimeout(this._audioHealthTimer);
+    this._audioHealthTimer = setTimeout(() => {
+      this._audioHealthTimer = null;
+      if (!this._sessionActive) return;
+      const snap = this.capture.snapshot();
+      if (snap.state === CAPTURE_STATE.CAPTURING && snap.chunksReceived === 0) {
+        this.#reportError({
+          type: 'capture',
+          code: 'AUDIO_NO_DATA',
+          userMessage: 'Audio capture started, but Windows has delivered no audio data. Check the selected audio source and Windows output/microphone device.'
+        });
+        this.#broadcastState();
+      }
+    }, 2500);
+    if (this._audioHealthTimer.unref) this._audioHealthTimer.unref();
     if (this._vadTimer.unref) this._vadTimer.unref();
 
     return { ok: captureResult.ok, error: captureResult.ok ? undefined : captureResult.error };
@@ -262,6 +282,7 @@ this.ai = this.deps.ai || new AiClient({
     this.phase = PHASE.SESSION_ENDED;
     if (this._vadTimer) { clearInterval(this._vadTimer); this._vadTimer = null; }
     if (this._restartTimer) { clearTimeout(this._restartTimer); this._restartTimer = null; }
+    if (this._audioHealthTimer) { clearTimeout(this._audioHealthTimer); this._audioHealthTimer = null; }
     try { this.ai.cancel(); } catch (_) { /* */ }
     this.stt.stopSession();
     this.stt.removeAllListeners();
