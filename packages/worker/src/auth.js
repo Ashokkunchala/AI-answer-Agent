@@ -49,7 +49,7 @@ export function extractApiKey(request) {
 // Short-lived in-memory cache (per isolate) skips the KV read on repeat requests,
 // keeping authenticated tool traffic well under the 2s latency budget.
 const KEY_CACHE = new Map(); // id -> { data, cached_at }
-const KEY_CACHE_TTL_MS = 30000;
+const KEY_CACHE_TTL_MS = 5000;
 
 export async function validateApiKey(apiKey, env) {
   if (!apiKey || !env.API_KEYS) return null;
