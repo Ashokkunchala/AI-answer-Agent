@@ -365,8 +365,15 @@ class StreamingSTT extends EventEmitter {
     this.#stopKeepalive();
     this._keepaliveTimer = setInterval(() => {
       if (!this.connected || !this._ws) return;
+      // Flux can sit idle while local VAD is closed. Send an application-level
+      // KeepAlive during silence so the provider does not terminate an
+      // otherwise healthy session. Do not inject KeepAlive while audio is
+      // flowing; audio itself keeps the session active.
       if (Date.now() - this._lastSentAt < this.keepaliveMs) return;
-      try { this._ws.ping(); } catch (_) { /* socket closing */ }
+      try {
+        this._ws.send(JSON.stringify({ type: 'KeepAlive' }));
+        this._lastSentAt = Date.now();
+      } catch (_) { /* socket closing */ }
     }, this.keepaliveMs);
     if (this._keepaliveTimer.unref) this._keepaliveTimer.unref();
   }
