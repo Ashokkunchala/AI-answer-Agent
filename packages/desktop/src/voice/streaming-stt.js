@@ -93,7 +93,7 @@ class StreamingSTT extends EventEmitter {
     this.eotThreshold = options.eotThreshold ?? 0.5;
     this.eagerEotThreshold = options.eagerEotThreshold ?? 0.5; // null disables eager
     this.eotTimeoutMs = options.eotTimeoutMs ?? 1500;
-    this.keepaliveMs = options.keepaliveMs ?? 15000;
+    this.keepaliveMs = options.keepaliveMs ?? 8000;
 
     this._ws = null;
     this.connected = false;
