@@ -108,7 +108,6 @@ class AudioSourceManager {
 
     // System output loopback (always first).
     const defaultRender = (devices || []).find((d) => d.flow === 'render' && d.default) || null;
-    const defaultMic = (devices || []).find((d) => d.flow === 'capture' && d.default) || null;
     list.push({
       id: 'system',
       kind: SRC_KIND.SYSTEM,
@@ -116,14 +115,26 @@ class AudioSourceManager {
       device: defaultRender ? { id: defaultRender.id, name: defaultRender.name, bluetooth: !!defaultRender.bluetooth } : null,
     });
 
-    // Candidate capture mic endpoint (optional).
-    if (defaultMic) {
+    // Expose every active Windows capture endpoint, not only the default mic.
+    // The renderer performs the final Chromium/Electron device mapping, so
+    // keeping the WASAPI endpoint id here is useful for diagnostics/selection
+    // but must not be assumed to be the same id returned by enumerateDevices().
+    const captureMics = (devices || [])
+      .filter((d) => d.flow === 'capture' && d.state === 'active')
+      .sort((a, b) => Number(!!b.default) - Number(!!a.default) || String(a.name || '').localeCompare(String(b.name || '')));
+    for (const mic of captureMics) {
       list.push({
-        id: 'mic:' + defaultMic.id,
+        id: 'mic:' + mic.id,
         kind: SRC_KIND.MIC,
-        name: 'Microphone (' + defaultMic.name + ')',
-        deviceId: defaultMic.id,
-        device: { id: defaultMic.id, name: defaultMic.name, bluetooth: !!defaultMic.bluetooth },
+        name: 'Microphone (' + mic.name + ')' + (mic.default ? ' [Default]' : ''),
+        deviceId: mic.id,
+        device: {
+          id: mic.id,
+          name: mic.name,
+          bluetooth: !!mic.bluetooth,
+          default: !!mic.default,
+          state: mic.state,
+        },
       });
     }
 
