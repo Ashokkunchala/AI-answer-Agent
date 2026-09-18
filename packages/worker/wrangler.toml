@@ -9,7 +9,7 @@ enabled = true
 [vars]
 ENVIRONMENT = "production"
 
-# ��─ Optional: AI Gateway premium fallback (gpt-5.6-sol) ──
+# “€â”€ Optional: AI Gateway premium fallback (gpt-5.6-sol) â”€â”€
 # Uncomment and fill in to enable the safety-net gateway provider.
 # GATEWAY_ACCOUNT_ID = "your_24_hex_cloudflare_account_id"
 # GATEWAY_NAME = "generic"
@@ -28,3 +28,6 @@ binding = "AI"
 
 [[websockets]]
 binding = "VOICE_SOCKET"
+
+# Required for dashboard API-key administration. Set securely with:
+# npx wrangler secret put DASHBOARD_ADMIN_KEY
