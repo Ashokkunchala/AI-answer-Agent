@@ -362,7 +362,7 @@ async function main() {
   const cfg = loadAppConfig(opts.config);
   const deepgramKey = opts.key || cfg.deepgramApiKey || process.env.DEEPGRAM_API_KEY || '';
   const workerUrl = opts.workerUrl || cfg.workerUrl || process.env.WORKER_URL || 'https://devops-ai-agent.ashokkunchla.workers.dev';
-  const apiKey = opts.apiKey || cfg.apiKey || process.env.API_KEY || '';
+  const apiKey = opts.apiKey || opts['api-key'] || cfg.apiKey || process.env.API_KEY || '';
   const questionText = opts.text || 'Explain the difference between Docker and Kubernetes in a DevOps context.';
   const speed = Number(opts.speed) || 1;
 
