@@ -150,6 +150,37 @@ async function authenticate(request, env, path) {
   return null;
 }
 
+// Append and optionally transcribe one voice-socket audio frame.
+async function appendVoiceAudio(webSocket, session, audioBytes, env) {
+  if (!audioBytes || audioBytes.byteLength === 0) {
+    webSocket.send(JSON.stringify({ error: 'Empty audio frame' }));
+    return;
+  }
+
+  session.chunks.push(audioBytes);
+  session.lastAt = Date.now();
+  session.totalBytes = (session.totalBytes || 0) + audioBytes.byteLength;
+
+  if (session.totalBytes > 25 * 1024 * 1024) {
+    webSocket.send(JSON.stringify({ error: 'Session exceeded max audio size, call end' }));
+    try { webSocket.close(1009, 'Audio session too large'); } catch (_) {}
+    return;
+  }
+
+  // Preserve the existing partial-transcription feature. This endpoint remains
+  // a compatibility/batch-chunk API; the desktop Deepgram provider is the
+  // true persistent low-latency streaming path.
+  const partialResult = await transcribe(env, audioBytes, {
+    model: session.model,
+    language: session.language,
+  }, 'audio/webm');
+
+  webSocket.send(JSON.stringify({
+    type: 'partial',
+    text: partialResult.text,
+  }));
+}
+
 // WebSocket handler for voice transcription
 async function handleVoiceSocket(webSocket, env) {
   // In-memory audio buffer per session (keyed by webSocket)
@@ -159,6 +190,18 @@ async function handleVoiceSocket(webSocket, env) {
 
   webSocket.addEventListener('message', async (event) => {
     try {
+      // Binary WebSocket frames are valid audio chunks. The socket is explicitly
+      // configured for ArrayBuffer delivery before accept().
+      if (event.data instanceof ArrayBuffer) {
+        const session = sessions.get(webSocket);
+        if (!session) {
+          webSocket.send(JSON.stringify({ error: 'Start a session before sending audio' }));
+          return;
+        }
+        await appendVoiceAudio(webSocket, session, event.data, env);
+        return;
+      }
+
       const data = JSON.parse(event.data);
 
       // Control messages
@@ -166,6 +209,7 @@ async function handleVoiceSocket(webSocket, env) {
         const sessionId = crypto.randomUUID();
         sessions.set(webSocket, {
           chunks: [],
+          totalBytes: 0,
           startTime: Date.now(),
           lastAt: Date.now(),
           model: data.model || 'auto',
@@ -205,40 +249,15 @@ async function handleVoiceSocket(webSocket, env) {
         return;
       }
 
-      // Audio chunk (base64 in JSON or binary)
+      // Audio chunk encoded as base64 in a JSON text frame.
       if (sessions.has(webSocket)) {
         const session = sessions.get(webSocket);
-        let audioBytes;
-        if (typeof data.audio === 'string') {
-          // Base64 encoded audio
-          audioBytes = base64ToBytes(data.audio);
-        } else if (data.audio instanceof ArrayBuffer) {
-          // Binary audio data
-          audioBytes = data.audio;
-        } else {
+        if (typeof data.audio !== 'string') {
           webSocket.send(JSON.stringify({ error: 'Invalid audio format' }));
           return;
         }
-
-        session.chunks.push(audioBytes);
-        session.lastAt = Date.now();
-
-        if (session.chunks.reduce((a, c) => a + c.byteLength, 0) > MAX_SESSION_BYTES) {
-          sessions.delete(webSocket);
-          webSocket.send(JSON.stringify({ error: 'Session exceeded max audio size, call end' }));
-          return;
-        }
-
-        // Transcribe this chunk alone to get a partial
-        const partialResult = await transcribe(env, audioBytes, {
-          model: session.model,
-          language: session.language,
-        }, 'audio/webm');
-
-        webSocket.send(JSON.stringify({
-          type: 'partial',
-          text: partialResult.text,
-        }));
+        const audioBytes = base64ToBytes(data.audio);
+        await appendVoiceAudio(webSocket, session, audioBytes, env);
       }
     } catch (error) {
       console.error(`[Voice Socket] Error processing message: ${error}`);
