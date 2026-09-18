@@ -324,7 +324,11 @@ this.ai = this.deps.ai || new AiClient({
     // Mic sources need renderer getUserMedia streaming; other sources just
     // restart the native loopback capture.
     if (src.kind === SRC_KIND.MIC) {
-      this.emitToRenderer('voice:mic-request', { enable: true, deviceId: src.deviceId });
+      this.emitToRenderer('voice:mic-request', {
+        enable: true,
+        deviceId: src.deviceId,
+        deviceName: src.device && src.device.name ? src.device.name : src.name,
+      });
     } else {
       this.emitToRenderer('voice:mic-request', { enable: false });
     }
