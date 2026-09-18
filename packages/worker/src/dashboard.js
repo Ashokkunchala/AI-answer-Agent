@@ -368,7 +368,7 @@ function escapeHtml(s) {
 // embedded in the generated page source.
 async function api(method, path, body, retried) {
   var headers = { 'Content-Type': 'application/json' };
-  if (DASHBOARD_ADMIN_KEY && /^\/v1\/keys(?:$|\/)/.test(path)) {
+  if (DASHBOARD_ADMIN_KEY && (path === '/v1/keys' || path.startsWith('/v1/keys/'))) {
     headers.Authorization = 'Bearer ' + DASHBOARD_ADMIN_KEY;
   }
   var opts = { method: method, headers: headers };
@@ -376,7 +376,7 @@ async function api(method, path, body, retried) {
   var res = await fetch(BASE + path, opts);
   var data = await res.json();
 
-  if (res.status === 401 && /^\/v1\/keys(?:$|\/)/.test(path) && !retried) {
+  if (res.status === 401 && (path === '/v1/keys' || path.startsWith('/v1/keys/')) && !retried) {
     var entered = window.prompt('Enter the dashboard admin secret (DASHBOARD_ADMIN_KEY):');
     if (entered) {
       DASHBOARD_ADMIN_KEY = entered.trim();
