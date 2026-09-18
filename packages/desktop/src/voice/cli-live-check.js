@@ -155,7 +155,7 @@ function pcmToBuffer(samples) {
 /* -------------------------------------------------------------------- */
 /*  Streaming STT live probe                                             */
 /* -------------------------------------------------------------------- */
-function probeSTT(apiKey, pcmChunks, { eotThreshold, eagerEotThreshold, eotTimeoutMs, graceMs, audioMs, log }) {
+function probeSTT(apiKey, pcmChunks, { eotThreshold, eagerEotThreshold, partialQThresh, partialQMinLen, eotTimeoutMs, graceMs, audioMs, log }) {
   return new Promise((resolve) => {
     const stt = new StreamingSTT({
       apiKey,

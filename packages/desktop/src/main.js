@@ -1252,7 +1252,7 @@ function getVoiceService() {
       model: (config.model && config.model !== 'auto') ? config.model : 'auto',
       sttModel: config.sttModel || 'flux-general-en',
       eagerAnswer: config.eagerAnswer !== false,
-      eagerEotThreshold: config.eagerEotThreshold ?? 0.5,
+      eagerEotThreshold: config.eagerEotThreshold ?? 0.4,
       eotThreshold: config.eotThreshold ?? 0.5,
       eotTimeoutMs: config.eotTimeoutMs ?? 1500,
       endGraceMs: config.endGraceMs ?? 800,
@@ -1260,8 +1260,8 @@ function getVoiceService() {
       // confident question (mid-interviewer-speech) instead of waiting for
       // end-of-turn. Tunable; defaults keep the 2s budget.
       earlyAnswerOnPartial: config.earlyAnswerOnPartial !== false,
-      partialMinLength: config.partialMinLength ?? 16,
-      partialQuestionThreshold: config.partialQuestionThreshold ?? 0.55,
+      partialMinLength: config.partialMinLength ?? 8,
+      partialQuestionThreshold: config.partialQuestionThreshold ?? 0.45,
       voiceAnswerEndpoint: !!config.voiceAnswerEndpoint,
       probeModelOnStart: config.probeModelOnStart !== false,
       modelCacheFile: path.join(USER_DATA_PATH, 'voice-model-cache.json'),
