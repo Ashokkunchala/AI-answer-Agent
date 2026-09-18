@@ -25,6 +25,8 @@ export class DeepgramProvider extends SpeechToTextProvider {
     this._destroyed = false;
     this._reconnecting = false;
     this._manualDisconnect = false;
+    this._pendingAudio = [];
+    this._maxPendingAudioFrames = 50;
   }
 
   get apiKey() { return this.config.apiKey || ''; }
@@ -88,7 +90,16 @@ export class DeepgramProvider extends SpeechToTextProvider {
           this.connected = true;
           this.reconnectAttempts = 0;
           this._startPing();
-          console.log('[DeepgramProvider] Connected (Flux streaming active)');
+          // Replay only the short reconnect buffer. This reduces transcript
+          // gaps without allowing an outage to grow memory without bounds.
+          if (this._pendingAudio.length) {
+            const pending = this._pendingAudio.splice(0);
+            for (const frame of pending) {
+              if (this.ws?.readyState !== WebSocket.OPEN) break;
+              try { this.ws.send(frame); } catch (_) { break; }
+            }
+          }
+          console.log('[DeepgramProvider] Connected (streaming active)');
           this._emit('connected', { provider: 'deepgram', model: this.model });
           resolve();
         };
@@ -130,6 +141,7 @@ export class DeepgramProvider extends SpeechToTextProvider {
     this._manualDisconnect = true;
     this._destroyed = true;
     this._stopPing();
+    this._pendingAudio.length = 0;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     if (this.ws) {
       try { this.ws.close(1000, 'Client disconnect'); } catch (e) {}
@@ -141,6 +153,18 @@ export class DeepgramProvider extends SpeechToTextProvider {
 
   async sendAudio(audioData) {
     if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this._destroyed && audioData) {
+        if (this._pendingAudio.length >= this._maxPendingAudioFrames) {
+          this._pendingAudio.shift();
+        }
+        // Copy the frame because callers often reuse the underlying buffer.
+        const copy = audioData instanceof ArrayBuffer
+          ? audioData.slice(0)
+          : ArrayBuffer.isView(audioData)
+            ? audioData.buffer.slice(audioData.byteOffset, audioData.byteOffset + audioData.byteLength)
+            : audioData;
+        this._pendingAudio.push(copy);
+      }
       return false;
     }
     try {
@@ -213,7 +237,7 @@ export class DeepgramProvider extends SpeechToTextProvider {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         try { this.ws.send(JSON.stringify({ type: 'KeepAlive' })); } catch (e) {}
       }
-    }, 15000);
+    }, 4000);
   }
 
   _stopPing() {
