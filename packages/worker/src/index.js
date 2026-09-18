@@ -237,7 +237,12 @@ async function handleVoiceSocket(webSocket, env) {
           return;
         }
         session.queue = session.queue
-          .then(() => appendVoiceAudio(webSocket, session, event.data, env));
+          .catch(() => {})
+          .then(() => appendVoiceAudio(webSocket, session, event.data, env))
+          .catch((error) => {
+            webSocket.send(JSON.stringify({ error: 'Audio transcription failed' }));
+            console.error('[Voice Socket] Audio transcription error:', error?.message || error);
+          });
         await session.queue;
         return;
       }
@@ -301,7 +306,12 @@ async function handleVoiceSocket(webSocket, env) {
         }
         const audioBytes = base64ToBytes(data.audio);
         session.queue = session.queue
-          .then(() => appendVoiceAudio(webSocket, session, audioBytes, env));
+          .catch(() => {})
+          .then(() => appendVoiceAudio(webSocket, session, audioBytes, env))
+          .catch((error) => {
+            webSocket.send(JSON.stringify({ error: 'Audio transcription failed' }));
+            console.error('[Voice Socket] Audio transcription error:', error?.message || error);
+          });
         await session.queue;
       }
     } catch (error) {
