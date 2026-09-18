@@ -1888,14 +1888,59 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-app.on('will-quit', async () => {
+// Serialize application shutdown so native WASAPI resources are released
+// before Electron terminates. An async will-quit handler does not delay the
+// application exit, which can leave native audio resources alive on Windows.
+let shutdownStarted = false;
+
+async function shutdownForQuit() {
   stopTitleRotation();
   stopStealthReapply();
   globalShortcut.unregisterAll();
   stopScreenWatch();
-  if (voiceService) {
-    try { await voiceService.stop(); } catch (_) { /* */ }
+
+  // Stop the older/general audio-engine path too; it uses the same native
+  // loopback addon and can otherwise keep the process alive.
+  for (const [id, entry] of audioEngineCaptures) {
+    try { entry.capture && entry.capture.stop(); } catch (_) { /* best effort */ }
+    audioEngineCaptures.delete(id);
   }
-  if (ocrEngine) await ocrEngine.terminate();
+
+  if (voiceService) {
+    try { await voiceService.stop(); } catch (err) {
+      log('[Shutdown] voice stop failed: ' + ((err && err.message) || err));
+    }
+  }
+
+  if (ocrEngine) {
+    try { await ocrEngine.terminate(); } catch (err) {
+      log('[Shutdown] OCR terminate failed: ' + ((err && err.message) || err));
+    }
+    ocrEngine = null;
+  }
+
+  if (tray) {
+    try { tray.destroy(); } catch (_) { /* best effort */ }
+    tray = null;
+  }
+
+  // Allow native loopback teardown to complete before the final process exit.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', (event) => {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  event.preventDefault();
+
+  shutdownForQuit()
+    .catch((err) => log('[Shutdown] cleanup error: ' + ((err && err.message) || err)))
+    .finally(() => {
+      // app.exit bypasses before-quit/will-quit, so cleanup cannot recurse.
+      app.exit(0);
+    });
 });
