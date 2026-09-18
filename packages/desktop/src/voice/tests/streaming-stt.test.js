@@ -67,10 +67,15 @@ test('parses EndOfTurn with trigger', () => {
   assert.strictEqual(ev.trigger, 'model');
 });
 
-test('parses Connected and Error control messages', () => {
+test('parses Connected, ConfigureFailure and Error control messages', () => {
   assert.strictEqual(parseFluxMessage(msg({ type: 'Connected' })).kind, 'connected');
-  const err = parseFluxMessage(msg({ type: 'Error', description: 'boom' }));
+  const cfg = parseFluxMessage(msg({ type: 'ConfigureFailure', code: 'INVALID_THRESHOLD', description: 'bad threshold' }));
+  assert.strictEqual(cfg.kind, 'configure-failure');
+  assert.strictEqual(cfg.code, 'INVALID_THRESHOLD');
+  assert.strictEqual(cfg.message, 'bad threshold');
+  const err = parseFluxMessage(msg({ type: 'Error', code: 'DG_ERROR', description: 'boom' }));
   assert.strictEqual(err.kind, 'error');
+  assert.strictEqual(err.code, 'DG_ERROR');
   assert.strictEqual(err.message, 'boom');
 });
 
@@ -141,8 +146,12 @@ test('buffered frames flush once the socket opens', () => {
     assert.strictEqual(res.ok, true);
     handlers.open();
     assert.strictEqual(stt.connected, true);
-    assert.strictEqual(stt._preConnectBuffer.length, 0, 'buffer flushed after open');
-    assert.strictEqual(sentBytes >= 1280, true, 'buffered chunks sent after open');
+    // Flux audio is held until ConfigureSuccess, not merely socket open.
+    assert.strictEqual(stt._preConnectBuffer.length, 2, 'buffer retained until ConfigureSuccess');
+    handlers.message(Buffer.from(JSON.stringify({ type: 'ConfigureSuccess' })));
+    assert.strictEqual(stt._configured, true);
+    assert.strictEqual(stt._preConnectBuffer.length, 0, 'buffer flushed after ConfigureSuccess');
+    assert.strictEqual(sentBytes >= 1280, true, 'buffered chunks sent after configuration');
     stt._teardown();
   } finally {
     // ignore
@@ -161,7 +170,7 @@ test('sendAudio returns true when connected', () => {
 
 test('keepalive is armed with the configured idle interval', () => {
   const stt = new StreamingSTT({ apiKey: 'x', log: () => {} });
-  assert.strictEqual(stt.keepaliveMs, 15000);
+  assert.strictEqual(stt.keepaliveMs, 8000);
   const stt2 = new StreamingSTT({ apiKey: 'x', log: () => {}, keepaliveMs: 5000 });
   assert.strictEqual(stt2.keepaliveMs, 5000);
   stt2._ws = { send: () => {}, ping: () => {}, readyState: 1 };
