@@ -604,10 +604,10 @@ function toggleMic() {
 }
 
 async function initVoiceBridge() {
-  // Kick off the capture + STT + AI warmup immediately (warm but not
-  // listening — audio only feeds STT once the user presses the mic button).
-  await voice.start();
-
+  // Register event handlers BEFORE starting the service. Microphone sources
+  // require a renderer getUserMedia handshake; registering after voice.start()
+  // can miss the one-shot voice:mic-request event and leave native capture
+  // permanently "armed" with no PCM frames.
   unsubs.push(voice.onState((st) => onVoiceState(st)));
   unsubs.push(voice.onFrame((f) => onVoiceFrame(f)));
   unsubs.push(voice.onPartialTranscript((p) => onPartial(p)));
@@ -623,6 +623,10 @@ async function initVoiceBridge() {
   unsubs.push(voice.onDevices((d) => onDevices(d)));
   unsubs.push(voice.onMicRequest((r) => onMicRequest(r)));
   if (voice.onToggleHud) unsubs.push(voice.onToggleHud(() => toggleHud()));
+
+  // Start only after all one-shot/session events are subscribed.
+  // This is especially important for the initial microphone request.
+  await voice.start();
 
   // Listen for screen captures (from Ctrl+J hotkey)
   window.interviewAPI?.onScreenCaptured?.((path) => {
