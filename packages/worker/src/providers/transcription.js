@@ -192,10 +192,11 @@ function normalizeResult(result, modelKey, modelId) {
 }
 
 function timeoutPromise(ms, promise) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(httpError(504, `Transcription timeout after ${ms}ms`)), ms)),
-  ]);
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(httpError(504, `Transcription timeout after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 // Run the transcription chain with automatic degradation.

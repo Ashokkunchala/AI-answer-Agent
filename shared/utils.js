@@ -40,17 +40,18 @@ export function base64ToBytes(b64) {
  * @param {Request} [request] - Optional request for Origin reflection
  * @returns {Response}
  */
-export function jsonResponse(data, status = 200, request = null) {
-  const origin = request ? request.headers.get('Origin') : null;
+export function jsonResponse(data, status = 200, request = null, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': origin || '*',
+      // No credentials are used by this API; wildcard CORS avoids reflecting
+      // attacker-controlled Origin values while preserving API-key clients.
+      'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Max-Age': '86400',
-      'Vary': 'Origin',
+      ...extraHeaders,
     },
   });
 }

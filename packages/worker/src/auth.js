@@ -22,7 +22,7 @@ async function sha256Hex(str) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function timingSafeEqual(a, b) {
+export function timingSafeEqual(a, b) {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
@@ -49,7 +49,7 @@ export function extractApiKey(request) {
 // Short-lived in-memory cache (per isolate) skips the KV read on repeat requests,
 // keeping authenticated tool traffic well under the 2s latency budget.
 const KEY_CACHE = new Map(); // id -> { data, cached_at }
-const KEY_CACHE_TTL_MS = 30000;
+const KEY_CACHE_TTL_MS = 5000;
 
 export async function validateApiKey(apiKey, env) {
   if (!apiKey || !env.API_KEYS) return null;

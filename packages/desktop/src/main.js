@@ -967,9 +967,24 @@ async function queryAI(prompt, onDelta, history, taskType) {
   throw lastError || new Error('All worker endpoints failed');
 }
 
+// Only our known application windows may invoke privileged IPC handlers.
+// This prevents a compromised/untrusted renderer from calling file, audio,
+// configuration, or AI operations exposed by the main process.
+function assertTrustedSender(event) {
+  const sender = event?.sender;
+  const frame = event?.senderFrame;
+  const trusted = [mainWindow, settingsWindow, interviewPanel]
+    .filter((win) => win && !win.isDestroyed())
+    .some((win) => win.webContents === sender);
+  if (frame && frame.isMainFrame === false) throw new Error('Unauthorized IPC frame');
+  if (!trusted) throw new Error('Unauthorized IPC sender');
+  return sender;
+}
+
 // IPC Handlers
-ipcMain.handle('get-config', () => config);
+ipcMain.handle('get-config', (event) => { assertTrustedSender(event); return config; });
 ipcMain.handle('save-config', (event, c) => {
+  assertTrustedSender(event);
   if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
   // Allowlist of config keys the renderer can write
   const ALLOWED_KEYS = new Set([
@@ -988,11 +1003,12 @@ ipcMain.handle('save-config', (event, c) => {
   saveConfig(config);
   return true;
 });
-ipcMain.handle('toggle-overlay', () => toggleOverlay());
-ipcMain.handle('start-screen-watch', () => { startScreenWatch(); return true; });
-ipcMain.handle('stop-screen-watch', () => { stopScreenWatch(); return true; });
-ipcMain.handle('manual-capture', async () => await captureScreen());
+ipcMain.handle('toggle-overlay', (event) => { assertTrustedSender(event); return toggleOverlay(); });
+ipcMain.handle('start-screen-watch', (event) => { assertTrustedSender(event); startScreenWatch(); return true; });
+ipcMain.handle('stop-screen-watch', (event) => { assertTrustedSender(event); stopScreenWatch(); return true; });
+ipcMain.handle('manual-capture', async (event) => { assertTrustedSender(event); return await captureScreen(); });
 ipcMain.handle('process-capture', async (event, capturePath) => {
+  assertTrustedSender(event);
   try {
     await processScreenCapture(capturePath || (await captureScreen()));
     return true;
@@ -1002,6 +1018,7 @@ ipcMain.handle('process-capture', async (event, capturePath) => {
   }
 });
 ipcMain.handle('query-ai', async (event, { prompt, history, taskType }) => {
+  assertTrustedSender(event);
   const sender = event.sender;
   let lastSent = '';
   const onDelta = (full) => {
@@ -1018,23 +1035,26 @@ ipcMain.handle('query-ai', async (event, { prompt, history, taskType }) => {
     throw new Error(e.message || 'AI request failed');
   }
 });
-ipcMain.handle('minimize-to-tray', () => { if (mainWindow) mainWindow.hide(); });
-ipcMain.handle('open-settings', () => openSettings());
-ipcMain.handle('toggle-interview-panel', () => toggleInterviewPanel());
+ipcMain.handle('minimize-to-tray', (event) => { assertTrustedSender(event); if (mainWindow) mainWindow.hide(); });
+ipcMain.handle('open-settings', (event) => { assertTrustedSender(event); return openSettings(); });
+ipcMain.handle('toggle-interview-panel', (event) => { assertTrustedSender(event); return toggleInterviewPanel(); });
 ipcMain.handle('set-interview-position', (event, pos) => {
+  assertTrustedSender(event);
   if (interviewPanel && !interviewPanel.isDestroyed()) {
     interviewPanel.setPosition(pos.x, pos.y);
   }
   return true;
 });
-ipcMain.handle('get-interview-position', () => {
+ipcMain.handle('get-interview-position', (event) => {
+  assertTrustedSender(event);
   if (interviewPanel && !interviewPanel.isDestroyed()) {
     const pos = interviewPanel.getPosition();
     return { x: pos[0], y: pos[1] };
   }
   return null;
 });
-ipcMain.handle('start-window-drag', () => {
+ipcMain.handle('start-window-drag', (event) => {
+  assertTrustedSender(event);
   if (interviewPanel && !interviewPanel.isDestroyed()) {
     interviewPanel.startDragging();
   }
@@ -1043,6 +1063,7 @@ ipcMain.handle('start-window-drag', () => {
 
 // ── Stealth IPC Handlers ──
 ipcMain.handle('set-overlay-opacity', (event, opacity) => {
+  assertTrustedSender(event);
   if (mainWindow && !mainWindow.isDestroyed()) {
     setOverlayOpacity(mainWindow, opacity);
     config.overlayOpacity = opacity;
@@ -1052,6 +1073,7 @@ ipcMain.handle('set-overlay-opacity', (event, opacity) => {
 });
 
 ipcMain.handle('set-window-click-through', (event, enabled) => {
+  assertTrustedSender(event);
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.setIgnoreMouseEvents(enabled, { forward: true });
   }
@@ -1059,6 +1081,7 @@ ipcMain.handle('set-window-click-through', (event, enabled) => {
 });
 
 ipcMain.handle('set-window-title', (event, title) => {
+  assertTrustedSender(event);
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (fnSetWindowTextW) {
       const hwndBuf = mainWindow.getNativeWindowHandle();
@@ -1075,7 +1098,8 @@ ipcMain.handle('set-window-title', (event, title) => {
   return true;
 });
 
-ipcMain.handle('get-stealth-status', () => {
+ipcMain.handle('get-stealth-status', (event) => {
+  assertTrustedSender(event);
   return {
     antiCapture: !!fnSetWindowDisplayAffinity,
     windowStealth: !!fnSetWindowLongW,
@@ -1084,7 +1108,8 @@ ipcMain.handle('get-stealth-status', () => {
   };
 });
 
-ipcMain.handle('get-window-list', async () => {
+ipcMain.handle('get-window-list', async (event) => {
+  assertTrustedSender(event);
   const sources = await desktopCapturer.getSources({ types: ['window'] });
   return sources.map(s => ({ id: s.id, name: s.name }));
 });
@@ -1096,12 +1121,14 @@ function openSettings() {
   return true;
 }
 
-ipcMain.handle('get-screen-info', () => {
+ipcMain.handle('get-screen-info', (event) => {
+  assertTrustedSender(event);
   const d = screen.getPrimaryDisplay();
   return { width: d.size.width, height: d.size.height };
 });
 
-ipcMain.handle('get-audio-sources', async () => {
+ipcMain.handle('get-audio-sources', async (event) => {
+  assertTrustedSender(event);
   const sources = await desktopCapturer.getSources({ types: ['audio', 'window'] });
   return sources.map(s => ({ id: s.id, name: s.name, thumbnailDataURL: s.thumbnail.toDataURL() }));
 });
@@ -1121,7 +1148,8 @@ function stopAudioEngineFor(webContentsId) {
   audioEngineCaptures.delete(webContentsId);
 }
 
-ipcMain.handle('get-audio-engine-sources', async () => {
+ipcMain.handle('get-audio-engine-sources', async (event) => {
+  assertTrustedSender(event);
   try {
     const { sources, defaultSource } = await audioSourceManager.enumerateSources();
     return { sources, defaultSource };
@@ -1131,6 +1159,7 @@ ipcMain.handle('get-audio-engine-sources', async () => {
 });
 
 ipcMain.handle('start-audio-engine', (event, opts = {}) => {
+  assertTrustedSender(event);
   const sender = event.sender;
   const id = sender.id;
   log(`[AudioEngine] Starting audio engine for webContents ${id}`);
@@ -1183,11 +1212,13 @@ ipcMain.handle('start-audio-engine', (event, opts = {}) => {
 });
 
 ipcMain.handle('stop-audio-engine', (event) => {
+  assertTrustedSender(event);
   stopAudioEngineFor(event.sender.id);
   return true;
 });
 
 ipcMain.handle('get-audio-engine-status', (event) => {
+  assertTrustedSender(event);
   const entry = audioEngineCaptures.get(event.sender.id);
   return entry && entry.capture ? entry.capture.snapshot() : { running: false, source: null };
 });
@@ -1260,44 +1291,52 @@ async function ensureVoiceService() {
   return svc;
 }
 
-ipcMain.handle('voice:get-sources', async () => {
+ipcMain.handle('voice:get-sources', async (event) => {
+  assertTrustedSender(event);
   const svc = await ensureVoiceService();
   const sources = await svc.listSources();
   return { sources, selected: svc.sourceManager.selected, state: svc.sourceManager.selectedState };
 });
 
 ipcMain.handle('voice:select-source', async (event, id) => {
+  assertTrustedSender(event);
   const svc = await ensureVoiceService();
   return svc.selectSource(id);
 });
 
-ipcMain.handle('voice:start', async () => {
+ipcMain.handle('voice:start', async (event) => {
+  assertTrustedSender(event);
   const svc = await ensureVoiceService();
   return svc.start();
 });
 
-ipcMain.handle('voice:stop', async () => {
+ipcMain.handle('voice:stop', async (event) => {
+  assertTrustedSender(event);
   const svc = await ensureVoiceService();
   await svc.stop();
   return { ok: true };
 });
 
 ipcMain.handle('voice:set-listening', (event, enabled) => {
+  assertTrustedSender(event);
   if (!voiceService) return { ok: false, error: 'not-started' };
   return voiceService.setListening(!!enabled);
 });
 
-ipcMain.handle('voice:get-diagnostics', () => {
+ipcMain.handle('voice:get-diagnostics', (event) => {
+  assertTrustedSender(event);
   if (!voiceService) return null;
   return voiceService.getDiagnostics();
 });
 
-ipcMain.handle('voice:get-latency', () => {
+ipcMain.handle('voice:get-latency', (event) => {
+  assertTrustedSender(event);
   if (!voiceService) return null;
   return { last: voiceService.latency.last, stats: voiceService.latency.stats() };
 });
 
 ipcMain.handle('voice:report-ui-latency', (event, ms) => {
+  assertTrustedSender(event);
   if (!voiceService) return;
   voiceService.reportUiLatency(typeof ms === 'number' ? ms : NaN);
 });
@@ -1305,12 +1344,14 @@ ipcMain.handle('voice:report-ui-latency', (event, ms) => {
 // Mic frames pushed from the renderer (getUserMedia) when Microphone is the
 // selected source. 48 kHz mono int16 PCM.
 ipcMain.on('voice:mic-frame', (event, buffer) => {
+  assertTrustedSender(event);
   if (!voiceService) return;
   voiceService.pushMicFrame(Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []));
 });
 
 // Snippet management
 ipcMain.handle('save-snippet', async (event, { title, content, category }) => {
+  assertTrustedSender(event);
   const snippetsDir = path.join(USER_DATA_PATH, 'snippets');
   if (!fs.existsSync(snippetsDir)) fs.mkdirSync(snippetsDir, { recursive: true });
   const filename = `${category || 'general'}_${Date.now()}.json`;
@@ -1319,7 +1360,8 @@ ipcMain.handle('save-snippet', async (event, { title, content, category }) => {
   return true;
 });
 
-ipcMain.handle('load-snippets', async () => {
+ipcMain.handle('load-snippets', async (event) => {
+  assertTrustedSender(event);
   const snippetsDir = path.join(USER_DATA_PATH, 'snippets');
   if (!fs.existsSync(snippetsDir)) return [];
   const files = fs.readdirSync(snippetsDir).filter(f => f.endsWith('.json'));
@@ -1330,6 +1372,7 @@ ipcMain.handle('load-snippets', async () => {
 });
 
 ipcMain.handle('delete-snippet', async (event, { title, createdAt }) => {
+  assertTrustedSender(event);
   const snippetsDir = path.join(USER_DATA_PATH, 'snippets');
   if (!fs.existsSync(snippetsDir)) return false;
   const files = fs.readdirSync(snippetsDir).filter(f => f.endsWith('.json'));
@@ -1370,6 +1413,7 @@ function saveHistoryToFile(history) {
 }
 
 ipcMain.handle('save-history', async (event, { question, answer, type, metadata }) => {
+  assertTrustedSender(event);
   try {
     const history = loadHistoryFromFile();
     const entry = {
@@ -1388,7 +1432,8 @@ ipcMain.handle('save-history', async (event, { question, answer, type, metadata 
   }
 });
 
-ipcMain.handle('load-history', async () => {
+ipcMain.handle('load-history', async (event) => {
+  assertTrustedSender(event);
   try {
     return { success: true, history: loadHistoryFromFile() };
   } catch (e) {
@@ -1396,7 +1441,8 @@ ipcMain.handle('load-history', async () => {
   }
 });
 
-ipcMain.handle('clear-history', async () => {
+ipcMain.handle('clear-history', async (event) => {
+  assertTrustedSender(event);
   try {
     saveHistoryToFile([]);
     return { success: true };
@@ -1406,6 +1452,7 @@ ipcMain.handle('clear-history', async () => {
 });
 
 ipcMain.handle('export-history', async (event, { format }) => {
+  assertTrustedSender(event);
   try {
     const history = loadHistoryFromFile();
     if (format === 'csv') {
@@ -1428,6 +1475,7 @@ const RESUME_PATH = path.join(USER_DATA_PATH, 'resume.txt');
 const JOB_DESC_PATH = path.join(USER_DATA_PATH, 'job_desc.txt');
 
 ipcMain.handle('upload-resume', async (event, { fileData }) => {
+  assertTrustedSender(event);
   try {
     fs.writeFileSync(RESUME_PATH, fileData, 'utf8');
     config.resume = fileData;
@@ -1440,6 +1488,7 @@ ipcMain.handle('upload-resume', async (event, { fileData }) => {
 });
 
 ipcMain.handle('upload-job-desc', async (event, { fileData }) => {
+  assertTrustedSender(event);
   try {
     fs.writeFileSync(JOB_DESC_PATH, fileData, 'utf8');
     config.jobDesc = fileData;
@@ -1451,7 +1500,8 @@ ipcMain.handle('upload-job-desc', async (event, { fileData }) => {
   }
 });
 
-ipcMain.handle('get-resume', async () => {
+ipcMain.handle('get-resume', async (event) => {
+  assertTrustedSender(event);
   try {
     if (fs.existsSync(RESUME_PATH)) {
       return { success: true, content: fs.readFileSync(RESUME_PATH, 'utf8') };
@@ -1462,7 +1512,8 @@ ipcMain.handle('get-resume', async () => {
   }
 });
 
-ipcMain.handle('get-job-desc', async () => {
+ipcMain.handle('get-job-desc', async (event) => {
+  assertTrustedSender(event);
   try {
     if (fs.existsSync(JOB_DESC_PATH)) {
       return { success: true, content: fs.readFileSync(JOB_DESC_PATH, 'utf8') };
@@ -1475,6 +1526,7 @@ ipcMain.handle('get-job-desc', async () => {
 
 // Speech-to-text via the DevOps AI Agent worker
 ipcMain.handle('transcribe-audio', async (event, { audioBase64, mimeType }) => {
+  assertTrustedSender(event);
   try {
     const base = (config.workerUrl || DEFAULT_WORKER_URL).replace(/\/+$/, '');
     if (!base) {
@@ -1577,11 +1629,19 @@ app.whenReady().then(async () => {
   log('[Main] App is ready');
   const { session } = require('electron');
 
-  // Auto-grant media permissions
+  // Grant only the media permission required by the local application UI.
+  // Do not globally approve notifications, filesystem, HID, serial, etc.
+  const isTrustedOrigin = (origin) => {
+    if (!origin) return false;
+    return origin === 'file://' || origin.startsWith('file://');
+  };
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    callback(true);
+    const origin = webContents?.getURL?.() || '';
+    callback(permission === 'media' && isTrustedOrigin(origin));
   });
-  session.defaultSession.setPermissionCheckHandler(() => true);
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    return permission === 'media' && isTrustedOrigin(requestingOrigin);
+  });
 
   // ── Enhanced User-Agent: strip Electron, Chrome headless, and append realistic strings ──
   const baseUA = session.defaultSession.getUserAgent();

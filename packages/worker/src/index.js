@@ -4,7 +4,7 @@ import { routeRequest } from './router.js';
 import { classifyRequest } from './classifier.js';
 import { ROUTING_TABLE, MODELS, VERSION } from './config.js';
 import {
-  extractApiKey, validateApiKey, trackUsage,
+  extractApiKey, validateApiKey, trackUsage, timingSafeEqual,
   createApiKey, listApiKeys, revokeApiKey, deleteApiKey,
 } from './auth.js';
 import { DASHBOARD_HTML } from './dashboard.js';
@@ -13,7 +13,33 @@ import { handleSTTStream } from './providers/stt-stream.js';
 import { concatenateChunks, base64ToBytes, jsonResponse } from '../../../shared/utils.js';
 
 const PUBLIC_PATHS = ['/', '/health', '/v1/models', '/v1/tasks'];
+const ADMIN_PATHS = ['/v1/keys', '/v1/keys/revoke'];
 const VALID_TIERS = ['standard', 'premium'];
+
+const RATE_WINDOW_MS = 60 * 1000;
+const rateWindows = new Map(); // isolate-local guard; KV remains the source of key metadata
+
+function checkRateLimit(keyData) {
+  const limit = Number(keyData?.rate_limit || 0);
+  if (!Number.isFinite(limit) || limit <= 0 || !keyData?.id || keyData.id === 'anon') return null;
+
+  const now = Date.now();
+  if (rateWindows.size > 10000) {
+    for (const [id, timestamps] of rateWindows) {
+      if (!timestamps.some((t) => now - t < RATE_WINDOW_MS)) rateWindows.delete(id);
+    }
+  }
+  const effectiveLimit = Math.min(limit, 1000);
+  const existing = rateWindows.get(keyData.id);
+  const timestamps = existing ? existing.filter((t) => now - t < RATE_WINDOW_MS) : [];
+  if (timestamps.length >= effectiveLimit) {
+    rateWindows.set(keyData.id, timestamps);
+    return Math.ceil((RATE_WINDOW_MS - (now - timestamps[0])) / 1000);
+  }
+  timestamps.push(now);
+  rateWindows.set(keyData.id, timestamps);
+  return null;
+}
 
 function normalizePath(pathname) {
   if (pathname.length > 1) return pathname.replace(/\/+$/, '') || '/';
@@ -91,17 +117,65 @@ async function handleTranscription(request, env) {
   }, 200, request);
 }
 
-// Auth middleware â€” returns null if allowed, or a Response if denied.
-// Direct-use mode: requests WITHOUT an API key run as the shared anonymous identity.
-// Rate limiting is disabled (unlimited requests).
+// Auth middleware — public endpoints stay public, while protected API traffic
+// requires a key. The embedded dashboard remains usable without a key only
+// for same-origin browser requests, preserving the existing direct-use UI flow.
+function extractBearerToken(request) {
+  const auth = request.headers.get('Authorization') || '';
+  return auth.startsWith('Bearer ') ? auth.slice(7).trim() : null;
+}
+
+function isDashboardAdminRequest(request, env) {
+  const configured = typeof env.DASHBOARD_ADMIN_KEY === 'string' ? env.DASHBOARD_ADMIN_KEY : '';
+  const provided = extractBearerToken(request);
+  return !!configured && !!provided && timingSafeEqual(provided, configured);
+}
+
+function isAdminPath(path) {
+  return ADMIN_PATHS.includes(path);
+}
+
+function isSameOriginDashboardRequest(request) {
+  const origin = request.headers.get('Origin');
+  if (origin) {
+    try {
+      return new URL(origin).origin === new URL(request.url).origin;
+    } catch (_) {
+      return false;
+    }
+  }
+  return request.headers.get('Sec-Fetch-Site') === 'same-origin';
+}
+
 async function authenticate(request, env, path) {
   if (PUBLIC_PATHS.includes(path)) return null;
+
+  if (isAdminPath(path)) {
+    if (!env.DASHBOARD_ADMIN_KEY) {
+      return jsonResponse({ error: 'Dashboard administration is not configured. Set DASHBOARD_ADMIN_KEY as a Worker secret.' }, 503, request);
+    }
+    if (!isDashboardAdminRequest(request, env)) {
+      return jsonResponse({ error: 'Dashboard administrator authentication required.' }, 401, request);
+    }
+    request._keyData = { id: 'admin', name: 'dashboard-admin', tier: 'admin', rate_limit: 60 };
+    return null;
+  }
 
   const apiKey = extractApiKey(request);
 
   if (!apiKey) {
-    request._keyData = { id: 'anon', name: 'anonymous', tier: 'anonymous' };
-    return null;
+    // Voice sockets are never part of the dashboard direct-use flow and must
+    // always carry an explicit API key, including same-origin browser clients.
+    if (path === '/voice-socket') {
+      return jsonResponse({ error: 'Authentication required for voice WebSocket' }, 401, request);
+    }
+    if (isSameOriginDashboardRequest(request)) {
+      request._keyData = { id: 'anon', name: 'dashboard', tier: 'dashboard' };
+      return null;
+    }
+    return jsonResponse({
+      error: 'Authentication required. Use Authorization: Bearer <dvops_api_key>.',
+    }, 401, request);
   }
 
   const keyData = await validateApiKey(apiKey, env);
@@ -114,6 +188,37 @@ async function authenticate(request, env, path) {
   return null;
 }
 
+// Append and optionally transcribe one voice-socket audio frame.
+async function appendVoiceAudio(webSocket, session, audioBytes, env) {
+  if (!audioBytes || audioBytes.byteLength === 0) {
+    webSocket.send(JSON.stringify({ error: 'Empty audio frame' }));
+    return;
+  }
+
+  session.chunks.push(audioBytes);
+  session.lastAt = Date.now();
+  session.totalBytes = (session.totalBytes || 0) + audioBytes.byteLength;
+
+  if (session.totalBytes > 25 * 1024 * 1024) {
+    webSocket.send(JSON.stringify({ error: 'Session exceeded max audio size, call end' }));
+    try { webSocket.close(1009, 'Audio session too large'); } catch (_) {}
+    return;
+  }
+
+  // Preserve the existing partial-transcription feature. This endpoint remains
+  // a compatibility/batch-chunk API; the desktop Deepgram provider is the
+  // true persistent low-latency streaming path.
+  const partialResult = await transcribe(env, audioBytes, {
+    model: session.model,
+    language: session.language,
+  }, 'audio/webm');
+
+  webSocket.send(JSON.stringify({
+    type: 'partial',
+    text: partialResult.text,
+  }));
+}
+
 // WebSocket handler for voice transcription
 async function handleVoiceSocket(webSocket, env) {
   // In-memory audio buffer per session (keyed by webSocket)
@@ -123,6 +228,25 @@ async function handleVoiceSocket(webSocket, env) {
 
   webSocket.addEventListener('message', async (event) => {
     try {
+      // Binary WebSocket frames are valid audio chunks. The socket is explicitly
+      // configured for ArrayBuffer delivery before accept().
+      if (event.data instanceof ArrayBuffer) {
+        const session = sessions.get(webSocket);
+        if (!session) {
+          webSocket.send(JSON.stringify({ error: 'Start a session before sending audio' }));
+          return;
+        }
+        session.queue = session.queue
+          .catch(() => {})
+          .then(() => appendVoiceAudio(webSocket, session, event.data, env))
+          .catch((error) => {
+            webSocket.send(JSON.stringify({ error: 'Audio transcription failed' }));
+            console.error('[Voice Socket] Audio transcription error:', error?.message || error);
+          });
+        await session.queue;
+        return;
+      }
+
       const data = JSON.parse(event.data);
 
       // Control messages
@@ -130,6 +254,8 @@ async function handleVoiceSocket(webSocket, env) {
         const sessionId = crypto.randomUUID();
         sessions.set(webSocket, {
           chunks: [],
+          totalBytes: 0,
+          queue: Promise.resolve(),
           startTime: Date.now(),
           lastAt: Date.now(),
           model: data.model || 'auto',
@@ -146,7 +272,9 @@ async function handleVoiceSocket(webSocket, env) {
           return;
         }
 
-        // Concatenate all chunks and transcribe
+        // Wait for queued audio work so the final transcript contains every
+        // frame and multiple expensive transcription calls cannot overlap.
+        await session.queue;
         const audioBytes = concatenateChunks(session.chunks);
         sessions.delete(webSocket);
 
@@ -169,40 +297,22 @@ async function handleVoiceSocket(webSocket, env) {
         return;
       }
 
-      // Audio chunk (base64 in JSON or binary)
+      // Audio chunk encoded as base64 in a JSON text frame.
       if (sessions.has(webSocket)) {
         const session = sessions.get(webSocket);
-        let audioBytes;
-        if (typeof data.audio === 'string') {
-          // Base64 encoded audio
-          audioBytes = base64ToBytes(data.audio);
-        } else if (data.audio instanceof ArrayBuffer) {
-          // Binary audio data
-          audioBytes = data.audio;
-        } else {
+        if (typeof data.audio !== 'string') {
           webSocket.send(JSON.stringify({ error: 'Invalid audio format' }));
           return;
         }
-
-        session.chunks.push(audioBytes);
-        session.lastAt = Date.now();
-
-        if (session.chunks.reduce((a, c) => a + c.byteLength, 0) > MAX_SESSION_BYTES) {
-          sessions.delete(webSocket);
-          webSocket.send(JSON.stringify({ error: 'Session exceeded max audio size, call end' }));
-          return;
-        }
-
-        // Transcribe this chunk alone to get a partial
-        const partialResult = await transcribe(env, audioBytes, {
-          model: session.model,
-          language: session.language,
-        }, 'audio/webm');
-
-        webSocket.send(JSON.stringify({
-          type: 'partial',
-          text: partialResult.text,
-        }));
+        const audioBytes = base64ToBytes(data.audio);
+        session.queue = session.queue
+          .catch(() => {})
+          .then(() => appendVoiceAudio(webSocket, session, audioBytes, env))
+          .catch((error) => {
+            webSocket.send(JSON.stringify({ error: 'Audio transcription failed' }));
+            console.error('[Voice Socket] Audio transcription error:', error?.message || error);
+          });
+        await session.queue;
       }
     } catch (error) {
       console.error(`[Voice Socket] Error processing message: ${error}`);
@@ -231,6 +341,24 @@ export default {
     }
 
     try {
+      // Authenticated WebSocket voice endpoint. Cloudflare Workers requires the
+      // fetch handler to return a 101 response with a WebSocketPair; relying on
+      // a non-standard module export does not establish the connection.
+      if (path === '/voice-socket' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
+        if (request.method !== 'GET') {
+          return new Response('WebSocket upgrade requires GET', { status: 400 });
+        }
+        const authDenied = await authenticate(request, env, path);
+        if (authDenied) return authDenied;
+
+        const pair = new WebSocketPair();
+        const [client, server] = Object.values(pair);
+        server.binaryType = 'arraybuffer';
+        server.accept();
+        await handleVoiceSocket(server, env);
+        return new Response(null, { status: 101, webSocket: client });
+      }
+
       // â”€â”€â”€ Dashboard UI (public) â”€â”€â”€
       if (path === '/dashboard') {
         return new Response(DASHBOARD_HTML, {
@@ -239,10 +367,15 @@ export default {
       }
 
       // ── Auth check ──
-      // Allow WebSocket upgrade to /voice-socket without authentication (same as other public paths)
-      if (!(path === '/voice-socket' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket')) {
-        const authDenied = await authenticate(request, env, path);
-        if (authDenied) return authDenied;
+      const authDenied = await authenticate(request, env, path);
+      if (authDenied) return authDenied;
+
+      const retryAfter = checkRateLimit(request._keyData);
+      if (retryAfter !== null) {
+        return jsonResponse({
+          error: 'Rate limit exceeded',
+          retry_after_seconds: retryAfter,
+        }, 429, request, { 'Retry-After': String(retryAfter) });
       }
       // â”€â”€â”€ Health (public) â”€â”€â”€
       if (path === '/' || path === '/health') {
@@ -256,8 +389,8 @@ export default {
           dashboard: url.origin + '/dashboard',
           auth: 'API key required (except /health, /v1/models, /v1/tasks, /dashboard)',
           auth_header: 'Authorization: Bearer dvops_<id>_<secret>',
-          rate_limiting: 'Disabled â€” unlimited requests for keys and anonymous use',
-          key_management: 'Direct-use UI: no key needed in the dashboard. API keys are for external tool integrations.',
+          rate_limiting: 'Per-key rate_limit metadata is enforced server-side per Worker isolate; anonymous external API access is disabled.',
+          key_management: 'Dashboard key administration requires DASHBOARD_ADMIN_KEY. API keys are for external tool integrations.',
           endpoints: {
             'POST /v1/chat/completions': 'OpenAI-compatible chat (auth required)',
             'POST /v1/audio/transcriptions': 'Speech-to-text (multipart or base64 JSON, auth required)',
@@ -266,7 +399,7 @@ export default {
             'GET /v1/models': `List all ${modelCount} models (public)`,
             'GET /v1/tasks': 'List task types (public)',
             'POST /v1/route': 'Preview routing (auth required)',
-            'POST /v1/keys': 'Create API key (no auth â€” for external tools)',
+            'POST /v1/keys': 'Create API key (dashboard admin authentication required)',
             'GET /v1/keys': 'List keys',
             'POST /v1/keys/revoke': 'Revoke a key by id',
             'DELETE /v1/keys': 'Delete a key by id',
@@ -309,7 +442,7 @@ export default {
         });
       }
 
-      // â”€â”€â”€ Create API key (no auth needed â€” keys are for external tools) â”€â”€â”€
+      // â”€â”€â”€ Create API key (same-origin dashboard or authenticated request) â”€â”€â”€
       if (path === '/v1/keys' && request.method === 'POST') {
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
@@ -334,7 +467,7 @@ export default {
 
       // List API keys (requires auth)
       if (path === '/v1/keys' && request.method === 'GET') {
-        if (!request._keyData || request._keyData.id === 'anon') {
+        if (!request._keyData || !['admin'].includes(request._keyData.id)) {
           return jsonResponse({ error: 'Authentication required to list keys' }, 401, request);
         }
         const keys = await listApiKeys(env);
@@ -505,7 +638,7 @@ export default {
           'GET /dashboard': 'API Key Management UI (public)',
           'GET /v1/models': 'List models (public)',
           'GET /v1/tasks': 'List tasks (public)',
-          'POST /v1/keys': 'Create key (no auth â€” for external tools)',
+          'POST /v1/keys': 'Create key (dashboard admin authentication required)',
           'GET /v1/keys': 'List keys',
           'POST /v1/keys/revoke': 'Revoke key by id',
           'DELETE /v1/keys': 'Delete key by id',
@@ -532,13 +665,11 @@ export default {
 
 // Reflect the request Origin instead of wildcard * (works with credentials/localStorage flows)
 function corsHeaders(request = null) {
-  const origin = request ? request.headers.get('Origin') : null;
   return {
-    'Access-Control-Allow-Origin': origin || '*',
+    'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Max-Age': '86400',
-    'Vary': 'Origin',
   };
 }
 
