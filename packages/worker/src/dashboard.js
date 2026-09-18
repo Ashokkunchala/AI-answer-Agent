@@ -324,13 +324,13 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0}
               <tr><td><span class="badge badge-green">GET</span></td><td>/dashboard</td><td>No</td><td>This UI</td></tr>
               <tr><td><span class="badge badge-green">GET</span></td><td>/v1/models</td><td>No</td><td>List all models</td></tr>
               <tr><td><span class="badge badge-green">GET</span></td><td>/v1/tasks</td><td>No</td><td>List task routing</td></tr>
-              <tr><td><span class="badge badge-blue">POST</span></td><td>/v1/keys</td><td>None</td><td>Create API key (for external tools)</td></tr>
+              <tr><td><span class="badge badge-blue">POST</span></td><td>/v1/keys</td><td>Dashboard admin</td><td>Create API key (for external tools)</td></tr>
               <tr><td><span class="badge badge-blue">POST</span></td><td>/v1/chat/completions</td><td>Yes</td><td>OpenAI-compatible chat (all model types)</td></tr>
               <tr><td><span class="badge badge-blue">POST</span></td><td>/ask</td><td>Yes</td><td>Simple Q&amp;A</td></tr>
               <tr><td><span class="badge badge-blue">POST</span></td><td>/v1/route</td><td>Yes</td><td>Preview routing</td></tr>
-              <tr><td><span class="badge badge-green">GET</span></td><td>/v1/keys</td><td>None</td><td>List keys</td></tr>
-              <tr><td><span class="badge badge-blue">POST</span></td><td>/v1/keys/revoke</td><td>None</td><td>Revoke key by id</td></tr>
-              <tr><td><span class="badge badge-red">DEL</span></td><td>/v1/keys</td><td>None</td><td>Delete key by id</td></tr>
+              <tr><td><span class="badge badge-green">GET</span></td><td>/v1/keys</td><td>Dashboard admin</td><td>List keys</td></tr>
+              <tr><td><span class="badge badge-blue">POST</span></td><td>/v1/keys/revoke</td><td>Dashboard admin</td><td>Revoke key by id</td></tr>
+              <tr><td><span class="badge badge-red">DEL</span></td><td>/v1/keys</td><td>Dashboard admin</td><td>Delete key by id</td></tr>
               <tr><td><span class="badge badge-green">GET</span></td><td>/v1/usage</td><td>Yes</td><td>Usage stats</td></tr>
             </tbody>
           </table>
@@ -352,6 +352,7 @@ var ALL_MODELS = [];
 var ALL_TASKS = [];
 var chatHistory = [];   // multi-turn memory: [{role, content}]
 var pendingSnips = [];
+var DASHBOARD_ADMIN_KEY = sessionStorage.getItem('devopsDashboardAdminKey') || '';
 
 function $(id) { return document.getElementById(id); }
 
@@ -361,12 +362,28 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// Direct mode: no API key needed — requests run under the anonymous identity
-async function api(method, path, body) {
-  var opts = { method: method, headers: { 'Content-Type': 'application/json' } };
+// Dashboard chat remains direct-use, but key administration requires a
+// separate admin secret. The secret is kept only in sessionStorage and is
+// never embedded in the generated page source.
+async function api(method, path, body, retried) {
+  var headers = { 'Content-Type': 'application/json' };
+  if (DASHBOARD_ADMIN_KEY && /^\/v1\/keys(?:$|\/)/.test(path)) {
+    headers.Authorization = 'Bearer ' + DASHBOARD_ADMIN_KEY;
+  }
+  var opts = { method: method, headers: headers };
   if (body) opts.body = JSON.stringify(body);
   var res = await fetch(BASE + path, opts);
   var data = await res.json();
+
+  if (res.status === 401 && /^\/v1\/keys(?:$|\/)/.test(path) && !retried) {
+    var entered = window.prompt('Enter the dashboard admin secret (DASHBOARD_ADMIN_KEY):');
+    if (entered) {
+      DASHBOARD_ADMIN_KEY = entered.trim();
+      sessionStorage.setItem('devopsDashboardAdminKey', DASHBOARD_ADMIN_KEY);
+      return api(method, path, body, true);
+    }
+  }
+
   if (!res.ok) throw new Error(data.error || 'Request failed (' + res.status + ')');
   return data;
 }
