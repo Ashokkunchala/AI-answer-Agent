@@ -4,7 +4,7 @@ import { routeRequest } from './router.js';
 import { classifyRequest } from './classifier.js';
 import { ROUTING_TABLE, MODELS, VERSION } from './config.js';
 import {
-  extractApiKey, validateApiKey, trackUsage,
+  extractApiKey, validateApiKey, trackUsage, timingSafeEqual,
   createApiKey, listApiKeys, revokeApiKey, deleteApiKey,
 } from './auth.js';
 import { DASHBOARD_HTML } from './dashboard.js';
