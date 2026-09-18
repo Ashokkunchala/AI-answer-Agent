@@ -281,6 +281,8 @@ this.ai = this.deps.ai || new AiClient({
     this.stt.removeAllListeners();
     this.capture.stop();
     this.capture.removeAllListeners();
+    // AudioDeviceManager owns a polling timer; stop it explicitly on shutdown.
+    try { this.deviceManager.stop(); } catch (_) { /* best effort */ }
     this.sourceManager.setState(SRC_STATE.DISCONNECTED);
     // Clear per-session state so a later start() begins clean (no stale gate,
     // restart budget, STT/AI readiness or in-flight ask leaking across runs).
