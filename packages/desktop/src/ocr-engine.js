@@ -9,6 +9,7 @@ class OCREngine {
   }
 
   async init() {
+    if (this.worker && this.ready) return this;
     try {
       this.worker = await Tesseract.createWorker(this.language, 1, {
         logger: () => {} // Suppress Tesseract logs
@@ -84,9 +85,12 @@ class OCREngine {
       numberedOptions.push(numMatch[1].trim());
     }
 
-    if (questions.length > 0) {
+    // OCR often produces the same question through multiple patterns. Preserve
+    // all useful candidates but avoid sending duplicates downstream.
+    const uniqueQuestions = [...new Map(questions.map((q) => [q.toLowerCase(), q])).values()];
+    if (uniqueQuestions.length > 0) {
       return {
-        question: questions[0],
+        question: uniqueQuestions[0],
         options: options.length > 0 ? options : null,
         numberedOptions: numberedOptions.length > 0 ? numberedOptions : null,
         fullText: cleaned
