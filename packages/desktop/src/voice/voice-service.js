@@ -135,6 +135,14 @@ this.ai = this.deps.ai || new AiClient({
     this._stopping = false;
     this._sessionActive = false;
 
+    // Audio-flow diagnostics. These counters distinguish a healthy source
+    // from a healthy STT socket; "connected" alone must never imply audio is
+    // actually reaching the STT provider.
+    this.audioFramesFed = 0;
+    this.audioFramesRejected = 0;
+    this.lastAudioFrameAt = 0;
+    this.lastAudioLevel = 0;
+
     // Active AI request bookkeeping (used for interruption + stale-answer drop).
     this._ask = null;                   // { turnId, question, status, asked, active, wasCancelled }
     this.maxFirstPartials = 500;        // bound on the per-turn partial marker set
@@ -338,7 +346,11 @@ this.ai = this.deps.ai || new AiClient({
     // acoustics never get cut. sendAudio buffers internally while the
     // socket is (re)connecting so the utterance's opening words survive.
     if ((this._gateOpen || frame.speech) && this.listeningEnabled) {
-      this.stt.sendAudio(frame.pcm);
+      const accepted = this.stt.sendAudio(frame.pcm);
+      if (accepted) this.audioFramesFed++;
+      else this.audioFramesRejected++;
+      this.lastAudioFrameAt = Date.now();
+      this.lastAudioLevel = Number.isFinite(frame.level) ? frame.level : 0;
       this._gateOpen = true;
     }
 
@@ -787,12 +799,25 @@ this.ai = this.deps.ai || new AiClient({
     const sttSnap = this.stt.snapshot();
     const latencyStats = this.latency.stats();
     const turnSnap = this.turnMan.snapshot();
+    const now = Date.now();
+    const capture = capSnap;
+    const audioFlow = {
+      framesFedToStt: this.audioFramesFed,
+      framesRejectedByStt: this.audioFramesRejected,
+      lastFrameAt: this.lastAudioFrameAt || null,
+      idleMs: this.lastAudioFrameAt ? now - this.lastAudioFrameAt : null,
+      lastLevel: this.lastAudioLevel,
+      sourceChunks: capture.chunksReceived,
+      processedFrames: capture.framesProcessed,
+      droppedChunks: capture.framesDropped,
+      flow: capture.framesProcessed > 0 ? 'flowing' : 'no-data',
+    };
     return {
       state: {
         session: this.phase,
         sessionId: this.sessionId,
         listening: this.listeningEnabled,
-        audio: { source: srcSnap, capture: capSnap },
+        audio: { source: srcSnap, capture: capSnap, flow: audioFlow },
         stt: sttSnap,
         turn: turnSnap,
         transcript: this.transcript.snapshot(),
