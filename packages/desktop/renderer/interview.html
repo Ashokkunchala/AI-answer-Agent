@@ -817,20 +817,37 @@ async function onSourceSelect() {
 let micStream = null, micCtx = null, micProc = null;
 async function onMicRequest(req) {
   if (!req || !req.enable) { disableMicCapture(); return; }
-  await enableMicCapture(req.deviceId);
+  await enableMicCapture(req.deviceId, req.deviceName);
 }
-async function enableMicCapture(deviceId) {
+async function enableMicCapture(deviceId, deviceName) {
   if (micStream) return;
+  const audioConstraints = (id) => ({
+    deviceId: id ? { exact: id } : undefined,
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+    channelCount: 1,
+  });
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId: deviceId ? { exact: deviceId } : undefined,
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        channelCount: 1,
-      }
-    });
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(deviceId) });
+    } catch (firstErr) {
+      // Windows/Electron device IDs can become stale after a headset/Bluetooth
+      // device reconnect. Retry against the currently enumerated devices
+      // instead of permanently failing the voice session.
+      let fallbackId = '';
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const inputs = devices.filter((d) => d.kind === 'audioinput');
+        const byLabel = deviceName
+          ? inputs.find((d) => d.label === deviceName || d.label.includes(deviceName) || deviceName.includes(d.label))
+          : null;
+        fallbackId = (byLabel || inputs[0])?.deviceId || '';
+      } catch (_) { /* best effort */ }
+      if (!fallbackId || fallbackId === deviceId) throw firstErr;
+      console.warn('[Voice] Requested microphone device is stale; using current input:', fallbackId);
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(fallbackId) });
+    }
     micCtx = new (window.AudioContext || window.webkitAudioContext)();
     const src = micCtx.createMediaStreamSource(micStream);
     micProc = micCtx.createScriptProcessor(4096, 1, 1);
