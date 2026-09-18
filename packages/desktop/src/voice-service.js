@@ -554,7 +554,7 @@ export class VoiceService {
 
     // Create TurnManager: debounces turns, emits turn-ready for AI
     this._turnManager = new TurnManager({
-      debounceMs: this.config.turnDebounceMs ?? 800,
+      debounceMs: this.config.turnDebounceMs ?? 250,
       onTurnReady: (data) => {
         // Emit turn-ready — components-init.js will send this to AI
         const now = Date.now();
