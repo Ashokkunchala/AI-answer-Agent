@@ -65,9 +65,12 @@ function parseFluxMessage(data) {
 
   if (msg.type === 'Connected') return { kind: 'connected' };
   if (msg.type === 'ConfigureSuccess') return { kind: 'configure-success' };
+  if (msg.type === 'ConfigureFailure') {
+    return { kind: 'configure-failure', code: msg.code || 'CONFIGURE_FAILED', message: msg.description || msg.message || 'Deepgram configuration failed' };
+  }
   if (msg.type === 'Metadata') return null;
   if (msg.type === 'Error') {
-    return { kind: 'error', message: msg.description || msg.message || 'Deepgram error' };
+    return { kind: 'error', code: msg.code || 'DEEPGRAM_ERROR', message: msg.description || msg.message || 'Deepgram error' };
   }
   return null;
 }
@@ -101,6 +104,7 @@ class StreamingSTT extends EventEmitter {
     this.maxReconnect = options.maxReconnect ?? 6;
     this._reconnectTimer = null;
     this._keepaliveTimer = null;
+    this._configureTimer = null;
     this._lastSentAt = Date.now();
     this._started = false;
     this._configured = false;
@@ -165,20 +169,44 @@ class StreamingSTT extends EventEmitter {
     this._configured = false;
 
     ws.on('open', () => {
+      // Socket open is not the same as Flux configuration ready. Queue audio
+      // until ConfigureSuccess confirms the requested thresholds/keyterms.
       this.connected = true;
       this.reconnectAttempts = 0;
       this.#sendConfigure();
       this.#startKeepalive();
-      this.#flushPreConnect();
-      this.emit('connected');
     });
 
     ws.on('message', (data) => {
       const ev = parseFluxMessage(data);
       if (!ev) return;
-      if (ev.kind === 'connected' || ev.kind === 'configure-success') return;
+      if (ev.kind === 'connected') return;
+      if (ev.kind === 'configure-success') {
+        this._configured = true;
+        if (this._configureTimer) {
+          clearTimeout(this._configureTimer);
+          this._configureTimer = null;
+        }
+        this.log('[stt] Deepgram Flux configuration acknowledged');
+        this.#flushPreConnect();
+        this.#flushSendQueue();
+        this.emit('connected');
+        return;
+      }
+      if (ev.kind === 'configure-failure') {
+        if (this._configureTimer) {
+          clearTimeout(this._configureTimer);
+          this._configureTimer = null;
+        }
+        this._configured = false;
+        this.lastError = { code: ev.code || 'CONFIGURE_FAILED', message: ev.message };
+        this.log('[stt] Deepgram configuration failed:', ev.message);
+        this.emit('error', this.lastError);
+        try { ws.close(); } catch (_) { /* best effort */ }
+        return;
+      }
       if (ev.kind === 'error') {
-        this.lastError = { code: 'DEEPGRAM_ERROR', message: ev.message };
+        this.lastError = { code: ev.code || 'DEEPGRAM_ERROR', message: ev.message };
         this.log('[stt] Deepgram error:', ev.message);
         this.emit('error', this.lastError);
         return;
@@ -195,6 +223,11 @@ class StreamingSTT extends EventEmitter {
     ws.on('close', () => {
       const wasConnected = this.connected;
       this.connected = false;
+      this._configured = false;
+      if (this._configureTimer) {
+        clearTimeout(this._configureTimer);
+        this._configureTimer = null;
+      }
       this._sendQueue = [];
       this._sendQueueBytes = 0;
       this.emit('disconnected');
@@ -219,7 +252,18 @@ class StreamingSTT extends EventEmitter {
       if (this.eagerEotThreshold != null) cfg.thresholds.eager_eot_threshold = this.eagerEotThreshold;
       if (this.languageHints.length && /multi/.test(this.model)) cfg.language_hints = this.languageHints;
       this._ws.send(JSON.stringify(cfg));
-      this._configured = true;
+      if (this._configureTimer) clearTimeout(this._configureTimer);
+      this._configureTimer = setTimeout(() => {
+        this._configureTimer = null;
+        if (this.connected && !this._configured) {
+          const err = { code: 'CONFIGURE_TIMEOUT', message: 'Deepgram Flux did not acknowledge configuration within 3000ms' };
+          this.lastError = err;
+          this.log('[stt] ' + err.message);
+          this.emit('error', err);
+          try { this._ws && this._ws.close(); } catch (_) { /* best effort */ }
+        }
+      }, 3000);
+      if (this._configureTimer.unref) this._configureTimer.unref();
     }
   }
 
@@ -299,7 +343,7 @@ class StreamingSTT extends EventEmitter {
   }
 
   #flushSendQueue() {
-    if (!this._sendQueue.length || !this._ws) return;
+    if (!this._configured || !this._sendQueue.length || !this._ws) return;
     const chunk = this._sendQueue.length === 1
       ? this._sendQueue[0]
       : Buffer.concat(this._sendQueue);
@@ -318,7 +362,7 @@ class StreamingSTT extends EventEmitter {
   // Send any remaining buffered audio (used at turn boundaries so the tail of
   // the last phrase reaches Flux before EndOfTurn is judged).
   flushSend() {
-    if (this.connected) this.#flushSendQueue();
+    if (this.connected && this._configured) this.#flushSendQueue();
   }
 
   // Ask Flux to force-end the current turn (ControlMessage ForceEndTurn).
@@ -356,6 +400,10 @@ class StreamingSTT extends EventEmitter {
     this._started = false;
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     this.#stopKeepalive();
+    if (this._configureTimer) {
+      clearTimeout(this._configureTimer);
+      this._configureTimer = null;
+    }
     this._teardown();
   }
 
