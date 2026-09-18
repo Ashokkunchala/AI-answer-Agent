@@ -1040,7 +1040,6 @@ ipcMain.handle('open-settings', (event) => { assertTrustedSender(event); return 
 ipcMain.handle('toggle-interview-panel', (event) => { assertTrustedSender(event); return toggleInterviewPanel(); });
 ipcMain.handle('set-interview-position', (event, pos) => {
   assertTrustedSender(event);
-  assertTrustedSender(event);
   if (interviewPanel && !interviewPanel.isDestroyed()) {
     interviewPanel.setPosition(pos.x, pos.y);
   }
@@ -1219,7 +1218,6 @@ ipcMain.handle('stop-audio-engine', (event) => {
 });
 
 ipcMain.handle('get-audio-engine-status', (event) => {
-  assertTrustedSender(event);
   assertTrustedSender(event);
   const entry = audioEngineCaptures.get(event.sender.id);
   return entry && entry.capture ? entry.capture.snapshot() : { running: false, source: null };
@@ -1451,7 +1449,6 @@ ipcMain.handle('clear-history', async (event) => {
 });
 
 ipcMain.handle('export-history', async (event, { format }) => {
-  assertTrustedSender(event);
   assertTrustedSender(event);
   try {
     const history = loadHistoryFromFile();
