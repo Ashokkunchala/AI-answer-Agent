@@ -267,6 +267,24 @@ export default {
     }
 
     try {
+      // Authenticated WebSocket voice endpoint. Cloudflare Workers requires the
+      // fetch handler to return a 101 response with a WebSocketPair; relying on
+      // a non-standard module export does not establish the connection.
+      if (path === '/voice-socket' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
+        if (request.method !== 'GET') {
+          return new Response('WebSocket upgrade requires GET', { status: 400 });
+        }
+        const authDenied = await authenticate(request, env, path);
+        if (authDenied) return authDenied;
+
+        const pair = new WebSocketPair();
+        const [client, server] = Object.values(pair);
+        server.binaryType = 'arraybuffer';
+        server.accept();
+        await handleVoiceSocket(server, env);
+        return new Response(null, { status: 101, webSocket: client });
+      }
+
       // â”€â”€â”€ Dashboard UI (public) â”€â”€â”€
       if (path === '/dashboard') {
         return new Response(DASHBOARD_HTML, {
