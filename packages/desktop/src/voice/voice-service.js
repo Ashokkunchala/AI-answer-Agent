@@ -363,11 +363,14 @@ this.ai = this.deps.ai || new AiClient({
 
     this.vad.process(frame);
 
-    // Voice-gated STT feed: once speech opens the gate we keep feeding
-    // until the utterance is finalized (post-roll), so end-of-phrase
-    // acoustics never get cut. sendAudio buffers internally while the
-    // socket is (re)connecting so the utterance's opening words survive.
-    if ((this._gateOpen || frame.speech) && this.listeningEnabled) {
+    // Feed the complete processed stream to Flux while listening. Do not
+    // gate system/process audio on the local heuristic VAD: interviewer speech
+    // can be present in loopback audio while the local VAD/classifier is below
+    // its threshold (Bluetooth volume, browser gain, music/meeting mix, etc.).
+    // Flux has its own model-integrated turn detection, so continuous audio is
+    // the reliable source of truth for StartOfTurn/EndOfTurn. The local VAD is
+    // still used for UI state, diagnostics and latency instrumentation.
+    if (this.listeningEnabled) {
       const accepted = this.stt.sendAudio(frame.pcm);
       if (accepted) this.audioFramesFed++;
       else this.audioFramesRejected++;
