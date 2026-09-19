@@ -1023,9 +1023,10 @@ async function attachListeners() {
       ocrLanguage: document.getElementById('ocrLanguage').value,
       micAutoSendDelay: parseInt(document.getElementById('micAutoSendDelay').value),
       micVadThreshold: parseInt(document.getElementById('micVadThreshold').value),
-      micGain: parseFloat(document.getElementById('micGain').value),
-      deepgramApiKey: document.getElementById('deepgramApiKey').value.trim()
+      micGain: parseFloat(document.getElementById('micGain').value)
     };
+    const deepgramApiKey = document.getElementById('deepgramApiKey').value.trim();
+    if (deepgramApiKey) settings.deepgramApiKey = deepgramApiKey;
     await window.electronAPI.saveConfig(settings);
     Object.assign(config, settings);
     await refreshDeepgramStatus();
