@@ -128,6 +128,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
+  getDeepgramStatus: () => ipcRenderer.invoke('get-deepgram-status'),
+  testDeepgram: (apiKey) => ipcRenderer.invoke('test-deepgram', apiKey),
   toggleOverlay: () => ipcRenderer.invoke('toggle-overlay'),
   startScreenWatch: () => ipcRenderer.invoke('start-screen-watch'),
   stopScreenWatch: () => ipcRenderer.invoke('stop-screen-watch'),
