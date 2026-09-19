@@ -301,6 +301,23 @@ this.ai = this.deps.ai || new AiClient({
     this.#broadcastState();
   }
 
+  // Update the credential without recreating the whole voice service.
+  // A running session is reconnected so the new key takes effect immediately.
+  setDeepgramApiKey(apiKey) {
+    const key = String(apiKey || '').trim();
+    this.cfg.deepgramApiKey = key;
+    this.stt.apiKey = key;
+    if (this._sessionActive) {
+      try {
+        this.stt.stopSession();
+        if (key) this.stt.startSession();
+      } catch (err) {
+        this.#onSttError({ code: 'STT_RECONNECT_FAILED', message: err.message });
+      }
+    }
+    return { ok: true, configured: !!key };
+  }
+
   // Pause/resume feeding live audio to STT (keep capture running warm).
   setListening(enabled) {
     const wasPaused = !this.listeningEnabled;
