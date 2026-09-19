@@ -159,7 +159,20 @@ function loadConfig() {
         // Corrupted JSON — backup the corrupt file and fall back to defaults
         try {
           const backupPath = CONFIG_PATH + '.corrupt.' + Date.now();
-          fs.copyFileSync(CONFIG_PATH, backupPath);
+          const corruptRaw = fs.readFileSync(CONFIG_PATH, 'utf8');
+          // The file may contain a legacy plaintext credential. Sanitize the
+          // backup when it can still be parsed before preserving it for debug.
+          try {
+            const corruptConfig = JSON.parse(corruptRaw);
+            if (corruptConfig && typeof corruptConfig === 'object') {
+              corruptConfig.deepgramApiKey = '';
+              fs.writeFileSync(backupPath, JSON.stringify(corruptConfig, null, 2));
+            } else {
+              fs.writeFileSync(backupPath, corruptRaw);
+            }
+          } catch (_) {
+            fs.writeFileSync(backupPath, corruptRaw);
+          }
           log('[Config] Corrupted config.json backed up to ' + backupPath + ', falling back to defaults');
         } catch (_) { /* best effort */ }
         return { ...DEFAULT_CONFIG };
