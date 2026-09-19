@@ -205,7 +205,8 @@ this.ai = this.deps.ai || new AiClient({
     // Warmup below only checks reachability and spends no generation tokens.
 
     // 2) Persistent Deepgram Flux STT session.
-    this.stt.startSession();
+    // Attach every listener BEFORE opening the socket so even a very fast
+    // ConfigureSuccess/connected event cannot be missed.
     this.stt.on('partial', (p) => this.#onSttPartial(p));
     this.stt.on('turn-start', (p) => this.#onSttTurnStart(p));
     this.stt.on('eager-end', (p) => this.#onSttEager(p));
@@ -214,6 +215,7 @@ this.ai = this.deps.ai || new AiClient({
     this.stt.on('connected', () => { this._sttConnectedEver = true; this.#evaluateReady(); });
     this.stt.on('disconnected', () => this.#evaluateReady());
     this.stt.on('error', (err) => this.#onSttError(err));
+    this.stt.startSession();
 
     // Turn lifecycle (single source of truth for starts/ends/interruptions).
     // Re-startable: drop any listeners from a previous session first.
