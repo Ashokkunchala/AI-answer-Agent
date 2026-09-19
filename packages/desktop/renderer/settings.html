@@ -586,6 +586,27 @@
         </div>
       </div>
 
+      <!-- Deepgram Voice Settings -->
+      <div class="section" style="margin-top:12px;">
+        <h3 class="section-title" style="color:#22D3EE;">&#127908; Deepgram Flux Voice</h3>
+        <div class="field">
+          <label>Deepgram API Key</label>
+          <div class="key-input-wrap">
+            <input class="key-input" type="password" id="deepgramApiKey"
+                   placeholder="Paste your Deepgram API key" autocomplete="off" spellcheck="false" />
+            <button class="key-toggle" type="button" id="deepgramKeyToggle" aria-label="Show or hide Deepgram key">&#128065;</button>
+          </div>
+          <div class="hint">Stored locally using the OS credential store when available. The key is used only by the desktop main process for Flux STT.</div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button type="button" id="deepgramTestBtn" class="save-btn" style="flex:1;padding:8px;font-size:11px;">Test Connection</button>
+          <button type="button" id="deepgramClearBtn" class="titlebar-btn" style="width:auto;padding:0 10px;">Clear</button>
+        </div>
+        <div id="deepgramStatus" style="margin-top:8px;padding:8px 10px;background:var(--input);border-radius:8px;font-size:10px;color:var(--text2);">
+          Checking Deepgram configuration...
+        </div>
+      </div>
+
       <!-- Stealth Settings -->
       <div class="section" style="margin-top:12px;">
         <h3 class="section-title" style="color:#8B5CF6;">&#128065; Stealth</h3>
@@ -726,6 +747,8 @@ async function init() {
   config = await window.electronAPI.getConfig();
   selectedModel = config.model || 'auto';
 
+  await refreshDeepgramStatus();
+
   document.getElementById('workerUrl').value = config.workerUrl || DEFAULT_WORKER_URL;
   document.getElementById('apiKey').value = config.apiKey || '';
   document.getElementById('captureDelay').value = config.captureDelay || 500;
@@ -857,7 +880,60 @@ function clearJobDescFile() {
   updateSteps();
 }
 
-function attachListeners() {
+async function refreshDeepgramStatus() {
+  const el = document.getElementById('deepgramStatus');
+  try {
+    const status = await window.electronAPI.getDeepgramStatus();
+    if (status && status.configured) {
+      el.textContent = 'Configured: ' + (status.masked || 'key saved');
+      el.style.color = 'var(--success)';
+      return;
+    }
+    el.textContent = 'Not configured — add your Deepgram API key.';
+    el.style.color = 'var(--warning)';
+  } catch (e) {
+    el.textContent = 'Unable to read Deepgram status.';
+    el.style.color = 'var(--error)';
+  }
+}
+
+async function testDeepgramConnection() {
+  const el = document.getElementById('deepgramStatus');
+  const btn = document.getElementById('deepgramTestBtn');
+  const key = document.getElementById('deepgramApiKey').value.trim();
+  el.textContent = 'Testing Deepgram Flux...';
+  el.style.color = 'var(--text-secondary)';
+  btn.disabled = true;
+  try {
+    const result = await window.electronAPI.testDeepgram(key);
+    if (result && result.ok) {
+      el.textContent = 'Connected — Deepgram Flux configuration verified.';
+      el.style.color = 'var(--success)';
+    } else {
+      el.textContent = (result && result.message) || 'Deepgram connection failed.';
+      el.style.color = 'var(--error)';
+    }
+  } catch (e) {
+    el.textContent = e.message || 'Deepgram connection failed.';
+    el.style.color = 'var(--error)';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function attachListeners() {
+  const deepgramInput = document.getElementById('deepgramApiKey');
+  document.getElementById('deepgramKeyToggle').addEventListener('click', () => {
+    deepgramInput.type = deepgramInput.type === 'password' ? 'text' : 'password';
+  });
+  document.getElementById('deepgramClearBtn').addEventListener('click', async () => {
+    deepgramInput.value = '';
+    await window.electronAPI.saveConfig({ deepgramApiKey: '' });
+    await refreshDeepgramStatus();
+    showToast('Deepgram key cleared');
+  });
+  document.getElementById('deepgramTestBtn').addEventListener('click', testDeepgramConnection);
+
   // Credential input refreshes steps
   ['workerUrl', 'apiKey'].forEach(id => {
     document.getElementById(id).addEventListener('input', updateSteps);
@@ -947,10 +1023,12 @@ function attachListeners() {
       ocrLanguage: document.getElementById('ocrLanguage').value,
       micAutoSendDelay: parseInt(document.getElementById('micAutoSendDelay').value),
       micVadThreshold: parseInt(document.getElementById('micVadThreshold').value),
-      micGain: parseFloat(document.getElementById('micGain').value)
+      micGain: parseFloat(document.getElementById('micGain').value),
+      deepgramApiKey: document.getElementById('deepgramApiKey').value.trim()
     };
     await window.electronAPI.saveConfig(settings);
     Object.assign(config, settings);
+    await refreshDeepgramStatus();
 
     const toast = document.getElementById('toast');
     toast.textContent = 'Settings Saved!';
