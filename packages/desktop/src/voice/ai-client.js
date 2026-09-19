@@ -271,7 +271,7 @@ class AiClient extends EventEmitter {
               method: 'POST',
               headers: mk(false),
               body: JSON.stringify(payload),
-              signal: this._ctrl ? this._ctrl.signal : undefined,
+              signal,
             });
             if (r.ok) this.emit('key-cleared');
           }
