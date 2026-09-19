@@ -209,7 +209,7 @@ class AiClient extends EventEmitter {
     return { ok: false, error: 'unreachable' };
   }
 
-  #stream(key, onDelta, effModel) {
+  #stream(key, onDelta, effModel, signal) {
     // Try each candidate worker URL in order until one streams.
     const mk = (withKey) => {
       const headers = { 'Content-Type': 'application/json' };
@@ -250,7 +250,7 @@ class AiClient extends EventEmitter {
       let lastError = null;
       for (const base of this.#candidates()) {
         for (const [endpoint, payloadFn] of endpoints) {
-          if (this._ctrl && this._ctrl.signal.aborted) throw dim('cancelled');
+          if (signal && signal.aborted) throw dim('cancelled');
           const payload = payloadFn();
           let r;
           try {
@@ -258,7 +258,7 @@ class AiClient extends EventEmitter {
               method: 'POST',
               headers: mk(endpoint !== '/api/answer'),
               body: JSON.stringify(payload),
-              signal: this._ctrl ? this._ctrl.signal : undefined,
+              signal,
             });
           } catch (err) {
             if (err.name === 'AbortError') throw dim('cancelled');
@@ -307,7 +307,11 @@ class AiClient extends EventEmitter {
     messages.push({ role: 'user', content: String(transcript) });
 
     const effModel = this.#effectiveModel((model && model !== 'auto') ? model : this.model);
-    this._ctrl = new AbortController();
+    const requestCtrl = new AbortController();
+    // Keep the active controller reference tied to this exact request. A fast
+    // speculative answer may be cancelled and replaced by a corrected final;
+    // an older request must never clear or abort the newer request's controller.
+    this._ctrl = requestCtrl;
     const t0 = process.hrtime.bigint();
     let firstTokenAt = null;
     let firstUsefulAt = null;
@@ -340,7 +344,8 @@ class AiClient extends EventEmitter {
       const result = await this.#stream(
         { messages, taskType, transcript, turnId, sessionId, conversationContext },
         onDelta,
-        effModel
+        effModel,
+        requestCtrl.signal
       );
       const content = result?.content || '';
       this.#rememberStream(result?.model || null, effModel === 'auto');
@@ -368,7 +373,7 @@ class AiClient extends EventEmitter {
       this.emit('error', { message: String((err && err.message) || err), text });
       throw err;
     } finally {
-      this._ctrl = null;
+      if (this._ctrl === requestCtrl) this._ctrl = null;
     }
   }
 
