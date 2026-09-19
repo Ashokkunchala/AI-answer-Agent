@@ -238,7 +238,19 @@ function saveConfig(cfg) {
     if (fs.existsSync(CONFIG_PATH)) {
       try {
         const backupPath = CONFIG_PATH + '.bak';
-        fs.copyFileSync(CONFIG_PATH, backupPath);
+        const existing = fs.readFileSync(CONFIG_PATH, 'utf8');
+        try {
+          const backupConfig = JSON.parse(existing);
+          // Never leave a legacy plaintext Deepgram key in the backup.
+          if (backupConfig && typeof backupConfig === 'object') {
+            backupConfig.deepgramApiKey = '';
+            fs.writeFileSync(backupPath, JSON.stringify(backupConfig, null, 2));
+          } else {
+            fs.writeFileSync(backupPath, existing);
+          }
+        } catch (_) {
+          fs.writeFileSync(backupPath, existing);
+        }
       } catch (_) { /* best effort */ }
     }
     // Atomic write: write to temp file then rename (atomic on NTFS)
@@ -247,8 +259,9 @@ function saveConfig(cfg) {
     fs.renameSync(tmpPath, CONFIG_PATH);
   } catch (e) {
     log('[Config] saveConfig error: ' + e.message);
-    // Fallback: direct write if rename fails
-    try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2)); } catch (_) { /* give up */ }
+    // Fallback: direct write if rename fails. Use the sanitized/encrypted
+    // representation, never the in-memory plaintext credential.
+    try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(persisted, null, 2)); } catch (_) { /* give up */ }
   }
 }
 
