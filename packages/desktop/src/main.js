@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen, desktopCapturer, globalShortcut, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, desktopCapturer, globalShortcut, Tray, Menu, nativeImage, safeStorage } = require('electron');
 const path = require('path');
 const { execSync } = require('child_process');
 const fs = require('fs');
@@ -217,6 +217,23 @@ function loadConfig() {
 
 function saveConfig(cfg) {
   try {
+    // Deepgram is a credential: keep it encrypted at rest when Electron
+    // safeStorage is available (Windows uses DPAPI). The in-memory config
+    // retains the plaintext only while the app is running.
+    const persisted = { ...cfg };
+    if (Object.prototype.hasOwnProperty.call(persisted, 'deepgramApiKey')) {
+      const key = String(persisted.deepgramApiKey || '');
+      if (key && app.isReady() && safeStorage.isEncryptionAvailable()) {
+        persisted.deepgramApiKey = '';
+        persisted.deepgramApiKeyEncrypted = safeStorage.encryptString(key).toString('base64');
+      } else if (!key) {
+        persisted.deepgramApiKey = '';
+        delete persisted.deepgramApiKeyEncrypted;
+      }
+    }
+    // Never persist the runtime-only plaintext field when an encrypted value exists.
+    if (persisted.deepgramApiKeyEncrypted) persisted.deepgramApiKey = '';
+
     // Backup existing config before overwriting
     if (fs.existsSync(CONFIG_PATH)) {
       try {
@@ -236,6 +253,22 @@ function saveConfig(cfg) {
 }
 
 const config = loadConfig();
+
+function hydrateDeepgramSecret() {
+  try {
+    if (!config.deepgramApiKey && config.deepgramApiKeyEncrypted && app.isReady() && safeStorage.isEncryptionAvailable()) {
+      config.deepgramApiKey = safeStorage.decryptString(Buffer.from(config.deepgramApiKeyEncrypted, 'base64'));
+    }
+    // Legacy plaintext configs are migrated to encrypted storage as soon as
+    // Electron's OS-backed credential store is available.
+    if (config.deepgramApiKey && app.isReady() && safeStorage.isEncryptionAvailable()) {
+      saveConfig(config);
+    }
+  } catch (e) {
+    log('[Config] Deepgram credential decrypt/migrate failed: ' + e.message);
+    config.deepgramApiKey = '';
+  }
+}
 
 // Write anti-capture PowerShell script only once
 function writeAntiCaptureScript() {
@@ -527,6 +560,14 @@ function createMainWindow() {
     mainWindow.focus();
   });
 
+  mainWindow.on('close', (event) => {
+    if (!shutdownStarted) {
+      // Closing the primary window is a real application exit. The tray
+      // remains available only while the window is hidden/minimized.
+      event.preventDefault();
+      app.quit();
+    }
+  });
   mainWindow.on('closed', () => { mainWindow = null; });
   mainWindow.setIgnoreMouseEvents(false);
 }
@@ -982,7 +1023,81 @@ function assertTrustedSender(event) {
 }
 
 // IPC Handlers
-ipcMain.handle('get-config', (event) => { assertTrustedSender(event); return config; });
+ipcMain.handle('get-config', (event) => {
+  assertTrustedSender(event);
+  const safeConfig = { ...config };
+  safeConfig.deepgramApiKey = '';
+  safeConfig.deepgramApiKeyConfigured = !!config.deepgramApiKey;
+  delete safeConfig.deepgramApiKeyEncrypted;
+  return safeConfig;
+});
+ipcMain.handle('get-deepgram-status', (event) => {
+  assertTrustedSender(event);
+  const key = String(config.deepgramApiKey || '');
+  return {
+    configured: !!key,
+    masked: key ? key.slice(0, 4) + '••••••••' + key.slice(-4) : '',
+  };
+});
+ipcMain.handle('test-deepgram', async (event, candidateKey) => {
+  assertTrustedSender(event);
+  const key = String(candidateKey || config.deepgramApiKey || '').trim();
+  if (!key) return { ok: false, code: 'NO_API_KEY', message: 'Enter a Deepgram API key first.' };
+
+  const WebSocket = require('ws');
+  const url = 'wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000';
+  return await new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    let ws;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try { ws && ws.close(); } catch (_) {}
+      resolve(result);
+    };
+    try {
+      ws = new WebSocket(url, {
+        headers: { Authorization: 'Token ' + key },
+        handshakeTimeout: 7000,
+      });
+      timer = setTimeout(() => finish({
+        ok: false, code: 'TIMEOUT', message: 'Deepgram connection timed out.'
+      }), 8000);
+      ws.once('open', () => {
+        try {
+          ws.send(JSON.stringify({
+            type: 'Configure',
+            thresholds: { eot_threshold: 0.5, eot_timeout_ms: 1500 },
+          }));
+        } catch (e) {
+          finish({ ok: false, code: 'SEND_FAILED', message: e.message });
+        }
+      });
+      ws.on('message', (data) => {
+        let msg;
+        try { msg = JSON.parse(data.toString()); } catch (_) { return; }
+        if (msg.type === 'ConfigureSuccess') {
+          finish({ ok: true, message: 'Deepgram Flux connection verified.' });
+        } else if (msg.type === 'ConfigureFailure' || msg.type === 'Error') {
+          finish({
+            ok: false,
+            code: msg.code || 'CONFIGURE_FAILED',
+            message: msg.description || msg.message || 'Deepgram rejected the configuration.',
+          });
+        }
+      });
+      ws.once('error', (err) => finish({
+        ok: false,
+        code: 'CONNECTION_FAILED',
+        message: String(err.message || err).replace(/token[^\s]*/ig, 'token [redacted]'),
+      }));
+    } catch (e) {
+      finish({ ok: false, code: 'CONNECTION_FAILED', message: e.message });
+    }
+  });
+});
 ipcMain.handle('save-config', (event, c) => {
   assertTrustedSender(event);
   if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
@@ -995,12 +1110,18 @@ ipcMain.handle('save-config', (event, c) => {
     'eotTimeoutMs', 'eagerEotThreshold', 'probeModelOnStart', 'resume', 'jobDesc',
     'interviewX', 'interviewY', 'roleName'
   ]);
+  const previousDeepgramKey = config.deepgramApiKey || '';
   for (const key of Object.keys(c)) {
     if (ALLOWED_KEYS.has(key)) {
       config[key] = c[key];
     }
   }
   saveConfig(config);
+  if (Object.prototype.hasOwnProperty.call(c, 'deepgramApiKey') &&
+      previousDeepgramKey !== (config.deepgramApiKey || '') &&
+      voiceService && typeof voiceService.setDeepgramApiKey === 'function') {
+    voiceService.setDeepgramApiKey(config.deepgramApiKey || '');
+  }
   return true;
 });
 ipcMain.handle('toggle-overlay', (event) => { assertTrustedSender(event); return toggleOverlay(); });
@@ -1627,6 +1748,7 @@ ipcMain.handle('transcribe-audio', async (event, { audioBase64, mimeType }) => {
 // App
 app.whenReady().then(async () => {
   log('[Main] App is ready');
+  hydrateDeepgramSecret();
   const { session } = require('electron');
 
   // Grant only the media permission required by the local application UI.
@@ -1924,8 +2046,19 @@ async function shutdownForQuit() {
     tray = null;
   }
 
-  // Allow native loopback teardown to complete before the final process exit.
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // Close every renderer/native window explicitly. This prevents hidden
+  // interview/settings windows from keeping Electron's process tree alive.
+  for (const win of BrowserWindow.getAllWindows()) {
+    try {
+      if (win && !win.isDestroyed()) win.destroy();
+    } catch (_) { /* best effort */ }
+  }
+  mainWindow = null;
+  settingsWindow = null;
+  interviewPanel = null;
+
+  // Allow native loopback/renderer teardown to complete before final exit.
+  await new Promise((resolve) => setTimeout(resolve, 250));
 }
 
 app.on('window-all-closed', () => {
@@ -1941,6 +2074,11 @@ app.on('before-quit', (event) => {
     .catch((err) => log('[Shutdown] cleanup error: ' + ((err && err.message) || err)))
     .finally(() => {
       // app.exit bypasses before-quit/will-quit, so cleanup cannot recurse.
+      // The short process.exit fallback guarantees that a native addon or
+      // orphaned Electron timer cannot leave the packaged app in Task Manager.
       app.exit(0);
+      setTimeout(() => {
+        try { process.exit(0); } catch (_) { /* already exiting */ }
+      }, 500).unref();
     });
 });
