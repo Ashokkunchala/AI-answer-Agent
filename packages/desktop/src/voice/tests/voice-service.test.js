@@ -66,6 +66,15 @@ test('start() reports ok:false when capture cannot start', async () => {
   assert.strictEqual(svc._ready, false);
 });
 
+test('start() does not fire a speculative AI generation during startup', async () => {
+  const aiStream = [], aiCancel = [];
+  const { svc } = makeService({ aiStream, aiCancel });
+  const res = await svc.start();
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(aiStream.length, 0, 'startup must not consume an AI generation');
+  await svc.stop();
+});
+
 test('start() reports ok:true when capture starts', async () => {
   const { svc } = makeService({});
   const res = await svc.start();
@@ -139,17 +148,16 @@ test('identical final transcript does not restart the eager answer', async () =>
   }
 });
 
-test('a non-question final cancels the eager-started answer', async () => {
+test('a substantive non-question final is still answered like chat', async () => {
   const aiStream = [], aiCancel = [];
   const { svc } = makeService({ aiStream, aiCancel });
   await svc.start();
   try {
     svc.turnMan.onFlux(startEvt(1, 30));
-    svc.turnMan.onFlux(eagerEvt('Explain Docker briefly', 1, 31));
-    assert.strictEqual(aiStream.length, 1, 'explanatory draft is a question');
-    svc.turnMan.onFlux(finalEvt('Docker is a tool.', 1, 32));
-    assert.strictEqual(aiCancel.length, 1, 'non-question final should stop the answer');
-    assert.strictEqual(aiStream.length, 1, 'no new answer to a non-question');
+    svc.turnMan.onFlux(finalEvt('Docker is a container platform.', 1, 32));
+    assert.strictEqual(aiStream.length, 1, 'voice should answer substantive speech even without question punctuation');
+    assert.strictEqual(aiStream[0].transcript, 'Docker is a container platform.');
+    assert.strictEqual(aiCancel.length, 0);
   } finally {
     await svc.stop();
   }
