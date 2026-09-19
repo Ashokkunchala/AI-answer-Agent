@@ -7,8 +7,10 @@
 //
 // Turn flow (Flux, adaptive — no fixed setTimeout as the primary mechanism):
 //   stt events -> TurnManager (turn lifecycle) -> transcript finalization ->
-//   question gate -> AiClient stream. EagerEndOfTurn may pre-start the answer;
-//   TurnResumed/StartOfTurn interruptions cancel the stale request.
+//   AiClient stream. Question detection is classification/UI metadata, not a
+//   hard gate: every substantive final transcript is answerable like chat.
+//   EagerEndOfTurn/strong partials may pre-start the answer; TurnResumed/
+//   StartOfTurn interruptions cancel stale speculative requests.
 //
 // Keep inside a single page/panel: the same service instance drives capture
 // for the interview session. This module never imports electron — main.js
@@ -197,9 +199,10 @@ this.ai = this.deps.ai || new AiClient({
       // once the capture source becomes healthy, but signal the failure now.
     }
 
-    // 1b) Learn/refresh the working AI model early so the first real question
-    // after launch skips the router's failing-model attempt (~1s) entirely.
-    this.#probeModel();
+    // 1b) Do NOT issue a speculative AI generation here. The voice client is
+    // single-flight by design; a startup probe would share its AbortController
+    // and streaming event channel with the first real interview answer.
+    // Warmup below only checks reachability and spends no generation tokens.
 
     // 2) Persistent Deepgram Flux STT session.
     this.stt.startSession();
@@ -621,14 +624,12 @@ this.ai = this.deps.ai || new AiClient({
     const q = detectQuestion(transcript);
     this.emitToRenderer('voice:classified', { isQuestion: q.isQuestion, confidence: q.confidence, kind: q.kind, turnId });
 
-    if (!q.isQuestion) {
-      // A statement (not a question) supersedes an early-started answer for
-      // this turn — cancel the in-flight generation instead of answering away.
-      const active = this._ask;
-      if (active && active.turnId === turnId && (active.viaEager || active.viaPartial) && !active.wasCancelled) {
-        this.log('[voice] early answer cancelled: final transcript is not a question');
-        this.#cancelActiveAsk();
-      }
+    // Question detection is classification only. Chat answers whatever the
+    // user submits, and voice must behave the same way. Do not discard valid
+    // interview statements just because punctuation/heuristics do not look
+    // like a question. Only ignore genuinely empty/near-empty transcripts.
+    const cleanTranscript = String(transcript || '').trim();
+    if (cleanTranscript.length < 2) {
       this.phase = this.#readyPhase();
       this.#broadcastState();
       return null;
@@ -725,23 +726,8 @@ this.ai = this.deps.ai || new AiClient({
     return this.phase === PHASE.PROCESSING ? PHASE.LISTENING : (this._ready ? PHASE.LISTENING : PHASE.WARMING_UP);
   }
 
-  // Fire a tiny, silent answer request at startup so the AiClient learns which
-  // model the worker actually serves and can use the fast path (explicit
-  // single-model request) from the very first real question. The result is
-  // discarded; the learned model is persisted by AiClient where configured.
-  #probeModel() {
-    if (this._probedModel) return;
-    this._probedModel = true;
-    if (this.deps.ai) return; // injected mocks skip the live probe
-    if (this.cfg.probeModelOnStart === false) return;
-    if (!(this.cfg.defaultWorkerUrl || this.cfg.workerUrl)) return;
-    this.log('[voice] probing worker for the working model…');
-    if (this.ai.warmup) this.ai.warmup().then(() => { }, () => { });
-    this.ai.streamAnswer({ transcript: 'Reply with OK.', taskType: 'interview', maxTokens: 4, turnId: '__probe_model' })
-      .then(() => this.log('[voice] model probe complete'))
-      .catch((err) => this.log('[voice] model probe failed:', (err && err.message) || err));
-  }
-
+  // Startup uses AiClient.warmup() only. Real generation begins from a
+  // transcript event, keeping the streaming client strictly single-flight.
   // --------------------------------------------------------------- ready
   #evaluateReady() {
     const captureOk = this.capture.isCapturing;
