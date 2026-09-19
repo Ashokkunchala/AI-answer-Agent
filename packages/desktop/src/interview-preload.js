@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('interviewAPI', {
   // Config
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
+  getDeepgramStatus: () => ipcRenderer.invoke('get-deepgram-status'),
+  testDeepgram: (apiKey) => ipcRenderer.invoke('test-deepgram', apiKey),
 
   // Overlay control
   toggleOverlay: () => ipcRenderer.invoke('toggle-overlay'),
