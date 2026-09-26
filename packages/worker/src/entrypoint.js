@@ -4,11 +4,56 @@ import { InterviewAnalysisWorkflow } from './workflows/interview-analysis.js';
 import { handleInterviewQueue } from './queues/interview.js';
 import { handleInterviewAPI } from './interview-api.js';
 import { handleInterviewVoiceSocket } from './voice/interview-socket.js';
+import { clientIdentity, rateLimitDecision, rateLimitHeaders, securityHeaders, safeErrorMessage } from './security.js';
+
+const PUBLIC = new Set(['/', '/health', '/v1/models', '/v1/tasks']);
+const API_LIMIT = 120;
+const VOICE_LIMIT = 30;
+
+function withSecurity(response, decision) {
+  const headers = new Headers(response.headers);
+  Object.entries(securityHeaders(rateLimitHeaders(decision))).forEach(([key, value]) => headers.set(key, value));
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
 
 const worker = {
   ...app,
   async fetch(request, env, ctx) {
-    return handleInterviewAPI(request, env, ctx, (nextRequest) => app.fetch(nextRequest, env, ctx));
+    const url = new URL(request.url);
+    const isVoiceUpgrade = url.pathname === '/voice-socket' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
+    const limit = isVoiceUpgrade ? VOICE_LIMIT : API_LIMIT;
+
+    if (!PUBLIC.has(url.pathname)) {
+      const decision = rateLimitDecision(request, limit);
+      if (!decision.allowed) {
+        return new Response(JSON.stringify({
+          error: 'rate_limit_exceeded',
+          message: 'Too many requests. Retry after the reset time.',
+          client: clientIdentity(request),
+        }), {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            ...securityHeaders(rateLimitHeaders(decision)),
+            'Retry-After': String(Math.max(1, Math.ceil((decision.resetAt - Date.now()) / 1000))),
+          },
+        });
+      }
+
+      try {
+        const response = await handleInterviewAPI(request, env, ctx, (nextRequest) => app.fetch(nextRequest, env, ctx));
+        return withSecurity(response, decision);
+      } catch (error) {
+        return new Response(JSON.stringify({ error: safeErrorMessage(error) }), {
+          status: error?.status || 500,
+          headers: { 'Content-Type': 'application/json', ...securityHeaders(rateLimitHeaders(decision)) },
+        });
+      }
+    }
+
+    const response = await handleInterviewAPI(request, env, ctx, (nextRequest) => app.fetch(nextRequest, env, ctx));
+    const decision = rateLimitDecision(request, Math.max(API_LIMIT, 300));
+    return withSecurity(response, decision);
   },
   async queue(batch, env, ctx) {
     await handleInterviewQueue(batch, env, ctx);
