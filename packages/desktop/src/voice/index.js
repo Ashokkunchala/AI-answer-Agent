@@ -1,17 +1,7 @@
-const { VoiceService } = require('./voice-service');
-const { VoiceSession } = require('./voice-session');
-const { VoiceStateMachine, STATES } = require('./voice-state');
-const { TTSService } = require('./tts-service');
-const { INTENTS, classifyVoiceText } = require('./voice-intent');
-const { EVENTS } = require('./voice-events');
-
-module.exports = {
-  VoiceService,
-  VoiceSession,
-  VoiceStateMachine,
-  STATES,
-  TTSService,
-  INTENTS,
-  EVENTS,
-  classifyVoiceText
-};
+const VoiceService=require('./voice-service');
+const VoiceSession=require('./voice-session');
+const TTSService=require('./tts-service');
+const EVENTS=require('./voice-events');
+const {STATES}=require('./voice-state');
+const {MODES,INTENTS,classifyVoiceIntent}=require('./voice-intent');
+module.exports={VoiceService,VoiceSession,TTSService,EVENTS,STATES,MODES,INTENTS,classifyVoiceIntent};

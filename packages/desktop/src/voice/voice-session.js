@@ -1,37 +1,13 @@
-const { classifyVoiceText } = require('./voice-intent');
+const { EventEmitter } = require('events');
+const { STATES, canTransition } = require('./voice-state');
+const EVENTS = require('./voice-events');
 
-class VoiceSession {
-  constructor({ onIntent = () => {}, onTranscript = () => {}, onError = () => {} } = {}) {
-    this.active = false;
-    this.onIntent = onIntent;
-    this.onTranscript = onTranscript;
-    this.onError = onError;
-    this.lastTranscript = '';
-  }
-
-  start() {
-    this.active = true;
-  }
-
-  stop() {
-    this.active = false;
-  }
-
-  handlePartial(text) {
-    if (!this.active) return;
-    this.lastTranscript = String(text || '');
-    this.onTranscript({ type: 'partial', text: this.lastTranscript });
-  }
-
-  handleFinal(text) {
-    if (!this.active) return;
-    const normalized = String(text || '').trim();
-    if (!normalized) return;
-    this.lastTranscript = normalized;
-    const intent = classifyVoiceText(normalized);
-    this.onTranscript({ type: 'final', text: normalized });
-    this.onIntent(intent);
-  }
+class VoiceSession extends EventEmitter {
+  constructor({ mode='interview', sessionId=`voice-${Date.now()}` }={}) { super(); this.mode=mode; this.sessionId=sessionId; this.state=STATES.IDLE; this.partial=''; this.history=[]; }
+  transition(next, data={}) { if (!canTransition(this.state,next)) throw new Error(`Invalid voice transition: ${this.state} -> ${next}`); this.state=next; this.emit('state',{state:next,...data}); }
+  partialTranscript(text) { this.partial=text||''; this.emit(EVENTS.PARTIAL,{text:this.partial,sessionId:this.sessionId}); }
+  finalTranscript(text) { const value=String(text||'').trim(); if(!value)return; this.history.push({role:'user',text:value,ts:Date.now()}); this.partial=''; this.emit(EVENTS.FINAL,{text:value,sessionId:this.sessionId,mode:this.mode}); }
+  interrupt(reason='user') { this.emit(EVENTS.INTERRUPTED,{reason,sessionId:this.sessionId}); }
+  reset() { this.partial=''; this.history=[]; this.state=STATES.IDLE; }
 }
-
-module.exports = { VoiceSession };
+module.exports=VoiceSession;
