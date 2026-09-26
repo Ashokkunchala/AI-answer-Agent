@@ -9,9 +9,13 @@ export class InterviewSession {
   constructor(state) {
     this.state = state;
     this.sql = state.storage.sql;
+    this.ready = state.blockConcurrencyWhile(async () => {
+      await this.initialize();
+    });
   }
 
   async fetch(request) {
+    await this.ready;
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/state') {
       const rows = this.sql.exec(
