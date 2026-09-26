@@ -5,6 +5,7 @@ import { classifyRequest } from './classifier.js';
 import { buildSystemPrompt } from './system-prompts.js';
 import { callCloudflareAI } from './providers/index.js';
 import { callGateway, gatewayUsable } from './providers/gateway.js';
+import { getCachedAIResponse, putCachedAIResponse } from './platform/cloudflare.js';
 
 // AI Gateway safety-net models tried after the Workers AI chain is exhausted.
 // Kept tiny (cheap during promo) and only invoked as a last resort.
@@ -116,6 +117,25 @@ export async function routeRequest(body, env) {
     ? messages
     : injectSystemPrompt(messages, taskType, body.system, context);
 
+  // Non-streaming, non-session requests can be served from the optional KV
+  // cache. Interview turns are deliberately excluded so answers remain fresh.
+  const cached = await getCachedAIResponse(env, body, taskType);
+  if (cached?.response) {
+    return {
+      response: cached.response,
+      metadata: {
+        task_type: taskType,
+        task_label: ROUTING_TABLE[taskType]?.label || 'General',
+        model_used: cached.response.model_used || explicitModel || 'cached',
+        model_id: cached.response.model_id || null,
+        routing_reason: 'Cloudflare KV cache',
+        latency_ms: 0,
+        all_attempts: [{ status: 'cache-hit' }],
+        cache_hit: true,
+      },
+    };
+  }
+
   // Get routing chain
   const chain = explicitModel
     ? [{ model: explicitModel, reason: 'explicitly requested' }]
@@ -163,6 +183,8 @@ export async function routeRequest(body, env) {
 
       attempts.push({ model: modelKey, modelId: modelConfig.id, status: 'success', latency_ms: elapsed });
 
+      await putCachedAIResponse(env, body, taskType, response);
+
       return {
         response,
         metadata: {
@@ -199,6 +221,7 @@ export async function routeRequest(body, env) {
         }, env));
         const elapsed = Date.now() - startTime;
         attempts.push({ model: modelKey, modelId: modelConfig.id, status: 'success', latency_ms: elapsed, fallback: true });
+        await putCachedAIResponse(env, body, taskType, response);
         return {
           response,
           metadata: {
