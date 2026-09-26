@@ -1,6 +1,6 @@
 name = "devops-ai-agent"
 main = "src/entrypoint.js"
-compatibility_date = "2024-12-01"
+compatibility_date = "2026-09-27"
 compatibility_flags = ["nodejs_compat"]
 
 [observability]
@@ -9,43 +9,41 @@ enabled = true
 [vars]
 ENVIRONMENT = "production"
 
-# Optional AI Gateway premium fallback.
-# Prefer secrets over plaintext values:
-#   npx wrangler secret put GATEWAY_API_TOKEN
-#   npx wrangler secret put GATEWAY_API_KEY
+# Optional AI Gateway credentials must be stored as Wrangler secrets.
+# npx wrangler secret put GATEWAY_API_TOKEN
+# npx wrangler secret put GATEWAY_API_KEY
 
 [[kv_namespaces]]
 binding = "API_KEYS"
-# Existing API_KEYS namespace.
 id = "c86c6823303947c49f35fa12cb52df8f"
 
 [ai]
 binding = "AI"
 
-# Existing voice endpoint is handled by the Worker WebSocket export.
-# No separate websocket binding is required by the application.
+# -----------------------------------------------------------------------------
+# FREE-FIRST CLOUDflare RESOURCES
+# -----------------------------------------------------------------------------
+# Existing account-specific IDs stay commented until provisioned in your
+# Cloudflare account. Never invent IDs or commit secrets.
 
-# -----------------------------------------------------------------------------
-# OPTIONAL CLOUDflare FREE-FIRST EXTENSIONS
-# -----------------------------------------------------------------------------
-# Add the resource IDs after provisioning them. Keeping these commented means
-# the existing deployment remains usable before account-specific resources are
-# created.
-#
+# Hot response/config cache
 # [[kv_namespaces]]
 # binding = "AI_CACHE"
 # id = "YOUR_AI_CACHE_KV_ID"
-#
+
+# Persistent interview data
 # [[d1_databases]]
 # binding = "INTERVIEW_DB"
 # database_name = "ai-answer-agent"
 # database_id = "YOUR_D1_DATABASE_ID"
 # migrations_dir = "migrations"
-#
+
+# Resume/JD/transcript/report objects
 # [[r2_buckets]]
 # binding = "AI_ASSETS"
 # bucket_name = "ai-answer-agent-assets"
-#
+
+# Live interview state; SQLite-backed DO is supported on Workers Free.
 # [[durable_objects.bindings]]
 # name = "INTERVIEW_SESSIONS"
 # class_name = "InterviewSession"
@@ -53,12 +51,24 @@ binding = "AI"
 # [[migrations]]
 # tag = "v1"
 # new_sqlite_classes = ["InterviewSession"]
-#
+
+# Background interview work
 # [[queues.producers]]
 # binding = "INTERVIEW_QUEUE"
 # queue = "ai-answer-agent-interview"
-#
+
+# Durable post-interview analysis
 # [[workflows]]
 # name = "interview-analysis"
 # binding = "INTERVIEW_WORKFLOW"
 # class_name = "InterviewAnalysisWorkflow"
+
+# Semantic resume/JD/project retrieval.
+# Vectorize currently has a Workers Free allocation; this index uses the
+# 768-dimensional BGE base embedding model configured in src/interview/retrieval.js.
+# Create it once with:
+#   npx wrangler vectorize create ai-answer-agent-context --dimensions=768 --metric=cosine
+# Then enable:
+# [[vectorize]]
+# binding = "VECTORIZE"
+# index_name = "ai-answer-agent-context"
