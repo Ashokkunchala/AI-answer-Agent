@@ -91,6 +91,11 @@ function scheduleInterviewPersistence(env, body, taskType, response, metadata) {
   }).catch((error) => console.warn('[Interview] D1 persistence error:', error?.message || error));
 }
 
+function scheduleCacheWrite(env, body, taskType, response) {
+  putCachedAIResponse(env, body, taskType, response)
+    .catch((error) => console.warn('[Cloudflare KV] cache write error:', error?.message || error));
+}
+
 export async function routeRequest(body, env) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   if (!messages.length) {
@@ -195,7 +200,7 @@ export async function routeRequest(body, env) {
         all_attempts: attempts,
       };
 
-      await putCachedAIResponse(env, body, taskType, response);
+      scheduleCacheWrite(env, body, taskType, response);
       scheduleInterviewPersistence(env, body, taskType, response, metadata);
 
       return { response, metadata };
@@ -230,7 +235,7 @@ export async function routeRequest(body, env) {
           latency_ms: elapsed,
           all_attempts: attempts,
         };
-        await putCachedAIResponse(env, body, taskType, response);
+        scheduleCacheWrite(env, body, taskType, response);
         scheduleInterviewPersistence(env, body, taskType, response, metadata);
         return { response, metadata };
       } catch (error) {
