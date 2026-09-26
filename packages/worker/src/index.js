@@ -91,7 +91,7 @@ async function handleTranscription(request, env) {
   }, 200, request);
 }
 
-// Auth middleware â€” returns null if allowed, or a Response if denied.
+// Auth middleware — returns null if allowed, or a Response if denied.
 // Direct-use mode: requests WITHOUT an API key run as the shared anonymous identity.
 // Rate limiting is disabled (unlimited requests).
 async function authenticate(request, env, path) {
@@ -231,7 +231,7 @@ export default {
     }
 
     try {
-      // â”€â”€â”€ Dashboard UI (public) â”€â”€â”€
+      // ─── Dashboard UI (public) ───
       if (path === '/dashboard') {
         return new Response(DASHBOARD_HTML, {
           headers: { 'Content-Type': 'text/html;charset=utf-8', ...corsHeaders(request) },
@@ -244,7 +244,7 @@ export default {
         const authDenied = await authenticate(request, env, path);
         if (authDenied) return authDenied;
       }
-      // â”€â”€â”€ Health (public) â”€â”€â”€
+      // ─── Health (public) ───
       if (path === '/' || path === '/health') {
         const modelCount = Object.keys(MODELS).length;
         return jsonResponse({
@@ -256,7 +256,7 @@ export default {
           dashboard: url.origin + '/dashboard',
           auth: 'API key required (except /health, /v1/models, /v1/tasks, /dashboard)',
           auth_header: 'Authorization: Bearer dvops_<id>_<secret>',
-          rate_limiting: 'Disabled â€” unlimited requests for keys and anonymous use',
+          rate_limiting: 'Disabled — unlimited requests for keys and anonymous use',
           key_management: 'Direct-use UI: no key needed in the dashboard. API keys are for external tool integrations.',
           endpoints: {
             'POST /v1/chat/completions': 'OpenAI-compatible chat (auth required)',
@@ -266,7 +266,7 @@ export default {
             'GET /v1/models': `List all ${modelCount} models (public)`,
             'GET /v1/tasks': 'List task types (public)',
             'POST /v1/route': 'Preview routing (auth required)',
-            'POST /v1/keys': 'Create API key (no auth â€” for external tools)',
+            'POST /v1/keys': 'Create API key (no auth — for external tools)',
             'GET /v1/keys': 'List keys',
             'POST /v1/keys/revoke': 'Revoke a key by id',
             'DELETE /v1/keys': 'Delete a key by id',
@@ -275,7 +275,7 @@ export default {
         });
       }
 
-      // â”€â”€â”€ List models (public) â”€â”€â”€
+      // ─── List models (public) ───
       if (path === '/v1/models' && request.method === 'GET') {
         return jsonResponse({
           object: 'list',
@@ -293,7 +293,7 @@ export default {
         });
       }
 
-      // â”€â”€â”€ Task types (public) â”€â”€â”€
+      // ─── Task types (public) ───
       if (path === '/v1/tasks' && request.method === 'GET') {
         return jsonResponse({
           tasks: Object.entries(ROUTING_TABLE).map(([key, r]) => ({
@@ -309,7 +309,7 @@ export default {
         });
       }
 
-      // â”€â”€â”€ Create API key (no auth needed â€” keys are for external tools) â”€â”€â”€
+      // ─── Create API key (no auth needed — keys are for external tools) ───
       if (path === '/v1/keys' && request.method === 'POST') {
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
@@ -321,7 +321,7 @@ export default {
           tier: VALID_TIERS.includes(body.tier) ? body.tier : 'standard',
         });
         return jsonResponse({
-          message: 'API key created. Save it now â€” it won\'t be shown again!',
+          message: 'API key created. Save it now — it won\'t be shown again!',
           key: keyData.key,
           id: keyData.id,
           name: keyData.name,
@@ -365,101 +365,44 @@ export default {
         return jsonResponse(result, result.success ? 200 : 404, request);
       }
 
-      // â”€â”€â”€ Usage stats â”€â”€â”€
+      // ─── Usage stats ───
       if (path === '/v1/usage' && request.method === 'GET') {
-        // Ensure key data exists (should be set by authenticate middleware)
-        if (!request._keyData) {
-          return jsonResponse({ error: 'Authentication required' }, 401, request);
-        }
-
+        if (!request._keyData) return jsonResponse({ error: 'Authentication required' }, 401, request);
         const today = new Date().toISOString().split('T')[0];
         const usageKey = `usage:${request._keyData.id}:${today}`;
-        const usage = env.API_KEYS
-          ? await env.API_KEYS.get(usageKey, { type: 'json' })
-          : null;
-
-        return jsonResponse({
-          key_name: request._keyData.name,
-          date: today,
-          usage: usage || { requests: 0, tokens: 0, models: {} },
-        });
+        const usage = env.API_KEYS ? await env.API_KEYS.get(usageKey, { type: 'json' }) : null;
+        return jsonResponse({ key_name: request._keyData.name, date: today, usage: usage || { requests: 0, tokens: 0, models: {} } });
       }
 
-      // â”€â”€â”€ Route preview â”€â”€â”€
+      // ─── Route preview ───
       if (path === '/v1/route' && request.method === 'POST') {
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
-
         const messages = Array.isArray(body.messages) ? body.messages : [];
         const taskType = ROUTING_TABLE[body.task_type] ? body.task_type : classifyRequest(messages);
         const route = ROUTING_TABLE[taskType] || ROUTING_TABLE.general;
-
-        return jsonResponse({
-          task_type: taskType,
-          task_label: route.label,
-          chain: route.chains.map((c) => ({
-            ...c,
-            model_id: MODELS[c.model]?.id,
-          })),
-        });
+        return jsonResponse({ task_type: taskType, task_label: route.label, chain: route.chains.map((c) => ({ ...c, model_id: MODELS[c.model]?.id })) });
       }
 
-      // â”€â”€â”€ Audio transcription (OpenAI-compatible) â”€â”€â”€
-      if (path === '/v1/audio/transcriptions' && ['POST', 'PUT'].includes(request.method)) {
-        return await handleTranscription(request, env, ctx);
-      }
+      // ─── Audio transcription (OpenAI-compatible) ───
+      if (path === '/v1/audio/transcriptions' && ['POST', 'PUT'].includes(request.method)) return await handleTranscription(request, env, ctx);
+      // ─── STT Streaming ───
+      if (path === '/v1/audio/stream' && ['POST', 'PUT'].includes(request.method)) return await handleSTTStream(request, env);
+      // ─── OpenAI-compatible chat completions ───
+      if (path === '/v1/chat/completions' && request.method === 'POST') { const body = await readBody(request); if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request); return respondToChat(body, env, ctx, request, null); }
 
-      // â”€â”€â”€ STT Streaming (chunked audio for real-time) â”€â”€â”€
-      if (path === '/v1/audio/stream' && ['POST', 'PUT'].includes(request.method)) {
-        return await handleSTTStream(request, env);
-      }
-
-      // â”€â”€â”€ OpenAI-compatible chat completions â”€â”€â”€
-      if (path === '/v1/chat/completions' && request.method === 'POST') {
-        const body = await readBody(request);
-        if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
-        return respondToChat(body, env, ctx, request, null);
-      }
-
-      // â”€â”€â”€ Simple ask â”€â”€â”€
+      // ─── Simple ask ───
       if (path === '/ask' && request.method === 'POST') {
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
-
         const question = body.question || body.q || body.prompt || '';
         if (!question) return jsonResponse({ error: 'Provide a "question" field' }, 400, request);
-
         let result;
-        try {
-          result = await routeRequest({
-            messages: [{ role: 'user', content: question }],
-            max_tokens: body.max_tokens || 0,
-            temperature: body.temperature ?? 0.7,
-            stream: false,
-            task_type: body.task_type,
-          }, env);
-        } catch (e) {
-          if (e.status) return jsonResponse({ error: e.message }, e.status, request);
-          throw e;
-        }
-
-        if (ctx) {
-          ctx.waitUntil(trackUsage(request._keyData.id, env, {
-            tokens: result.response.usage?.total_tokens || 0,
-            model: result.metadata.model_used,
-          }));
-        }
-
-        const reply = {
-          answer: result.response.content,
-          task_type: result.metadata.task_type,
-          model: result.metadata.model_used,
-          model_id: result.metadata.model_id,
-          latency_ms: result.metadata.latency_ms,
-        };
-        const attachments = attachmentsFrom(result.response);
-        if (attachments) reply.attachments = attachments;
-
+        try { result = await routeRequest({ messages: [{ role: 'user', content: question }], max_tokens: body.max_tokens || 0, temperature: body.temperature ?? 0.7, stream: false, task_type: body.task_type }, env); }
+        catch (e) { if (e.status) return jsonResponse({ error: e.message }, e.status, request); throw e; }
+        if (ctx) ctx.waitUntil(trackUsage(request._keyData.id, env, { tokens: result.response.usage?.total_tokens || 0, model: result.metadata.model_used }));
+        const reply = { answer: result.response.content, task_type: result.metadata.task_type, model: result.metadata.model_used, model_id: result.metadata.model_id, latency_ms: result.metadata.latency_ms };
+        const attachments = attachmentsFrom(result.response); if (attachments) reply.attachments = attachments;
         return jsonResponse(reply, 200, request);
       }
 
@@ -467,200 +410,72 @@ export default {
       if (path === '/api/answer' && request.method === 'POST') {
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
-
         const question = body.question || body.q || '';
         if (!question) return jsonResponse({ error: 'Provide a "question" field' }, 400, request);
-
         const messages = [];
         if (body.conversationContext) messages.push({ role: 'system', content: String(body.conversationContext) });
-        if (Array.isArray(body.history)) {
-          messages.push(...body.history.slice(0, 12).filter((m) => m && m.role && m.content));
-        }
+        if (Array.isArray(body.history)) messages.push(...body.history.slice(0, 12).filter((m) => m && m.role && m.content));
         messages.push({ role: 'user', content: question });
-
-        const chatBody = {
-          model: body.model || 'auto', // auto lets the router chain skip failing models gracefully
-          messages,
-          max_tokens: body.max_tokens || 512,
-          temperature: body.temperature ?? 0.3,
-          stream: body.stream !== false,
-          task_type: 'interview',
-          resume: body.resume,
-          jobDesc: body.jobDesc,
-          targetName: body.targetName,
-          participants: body.participants,
-        };
-        return respondToChat(chatBody, env, ctx, request, {
-          sessionId: body.sessionId || null,
-          turnId: body.turnId || null,
-        });
+        const chatBody = { model: body.model || 'auto', messages, max_tokens: body.max_tokens || 512, temperature: body.temperature ?? 0.3, stream: body.stream !== false, task_type: 'interview', resume: body.resume, jobDesc: body.jobDesc, targetName: body.targetName, participants: body.participants };
+        return respondToChat(chatBody, env, ctx, request, { sessionId: body.sessionId || null, turnId: body.turnId || null });
       }
 
-      // â”€â”€â”€ 404 â”€â”€â”€
-      return jsonResponse({
-        error: 'Not found',
-        dashboard: url.origin + '/dashboard',
-        endpoints: {
-          'GET /health': 'Health check (public)',
-          'GET /dashboard': 'API Key Management UI (public)',
-          'GET /v1/models': 'List models (public)',
-          'GET /v1/tasks': 'List tasks (public)',
-          'POST /v1/keys': 'Create key (no auth â€” for external tools)',
-          'GET /v1/keys': 'List keys',
-          'POST /v1/keys/revoke': 'Revoke key by id',
-          'DELETE /v1/keys': 'Delete key by id',
-          'GET /v1/usage': 'Usage stats',
-          'POST /v1/route': 'Preview routing',
-          'POST /v1/chat/completions': 'OpenAI-compatible chat',
-          'POST /api/answer': 'Realtime voice answer (sessionId/turnId)',
-          'POST /v1/audio/transcriptions': 'Speech-to-text (multipart or base64 JSON)',
-          'POST /ask': 'Simple Q&A',
-        },
-      }, 404, request);
-
+      return jsonResponse({ error: 'Not found', dashboard: url.origin + '/dashboard', endpoints: { 'GET /health': 'Health check (public)', 'GET /dashboard': 'API Key Management UI (public)', 'GET /v1/models': 'List models (public)', 'GET /v1/tasks': 'List tasks (public)', 'POST /v1/keys': 'Create key', 'GET /v1/keys': 'List keys', 'POST /v1/keys/revoke': 'Revoke key by id', 'DELETE /v1/keys': 'Delete key by id', 'GET /v1/usage': 'Usage stats', 'POST /v1/route': 'Preview routing', 'POST /v1/chat/completions': 'OpenAI-compatible chat', 'POST /api/answer': 'Realtime voice answer', 'POST /v1/audio/transcriptions': 'Speech-to-text', 'POST /ask': 'Simple Q&A' } }, 404, request);
     } catch (error) {
       console.error(`[Error] ${error.message}`);
       return jsonResponse({ error: error.message }, error.status || 500, request);
     }
   },
-  websocket: {
-    async handle(webSocket, env) {
-      await handleVoiceSocket(webSocket, env);
-    }
-  }
+  websocket: { async handle(webSocket, env) { await handleVoiceSocket(webSocket, env); } }
 };
 
-// Reflect the request Origin instead of wildcard * (works with credentials/localStorage flows)
 function corsHeaders(request = null) {
   const origin = request ? request.headers.get('Origin') : null;
-  return {
-    'Access-Control-Allow-Origin': origin || '*',
-    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Max-Age': '86400',
-    'Vary': 'Origin',
-  };
+  return { 'Access-Control-Allow-Origin': origin || '*', 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Max-Age': '86400', 'Vary': 'Origin' };
 }
-
 function attachmentsFrom(response) {
-  if (response.type === 'image') {
-    return [{ type: 'image', mime_type: response.mime_type || 'image/png', data: response.data }];
-  }
-  if (response.type === 'tts') {
-    return [{ type: 'audio', mime_type: response.mime_type || 'audio/mp3', data: response.data }];
-  }
+  if (response.type === 'image') return [{ type: 'image', mime_type: response.mime_type || 'image/png', data: response.data }];
+  if (response.type === 'tts') return [{ type: 'audio', mime_type: response.mime_type || 'audio/mp3', data: response.data }];
   return null;
 }
-
 function buildChatResponse(response, metadata, request) {
-  const base = {
-    id: `chatcmpl-${crypto.randomUUID()}`,
-    object: 'chat.completion',
-    model: metadata.model_used,
-    task_type: metadata.task_type,
-    task_label: metadata.task_label,
-    routing: {
-      reason: metadata.routing_reason,
-      attempts: metadata.all_attempts,
-    },
-    choices: [{
-      index: 0,
-      message: { role: 'assistant', content: response.content ?? '' },
-      finish_reason: 'stop',
-    }],
-    usage: response.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-    _metadata: { latency_ms: metadata.latency_ms, model: metadata.model_used, model_id: metadata.model_id },
-  };
-
-  const attachments = attachmentsFrom(response);
-  if (attachments) base.attachments = attachments;
-  if (response.type === 'embeddings') base.embedding_data = response.data;
-
+  const base = { id: `chatcmpl-${crypto.randomUUID()}`, object: 'chat.completion', model: metadata.model_used, task_type: metadata.task_type, task_label: metadata.task_label, routing: { reason: metadata.routing_reason, attempts: metadata.all_attempts }, choices: [{ index: 0, message: { role: 'assistant', content: response.content ?? '' }, finish_reason: 'stop' }], usage: response.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }, _metadata: { latency_ms: metadata.latency_ms, model: metadata.model_used, model_id: metadata.model_id } };
+  const attachments = attachmentsFrom(response); if (attachments) base.attachments = attachments; if (response.type === 'embeddings') base.embedding_data = response.data;
   return jsonResponse(base, 200, request);
 }
-
-// Shared chat handler for both /v1/chat/completions and /api/answer.
-// `meta` optionally carries { sessionId, turnId } echoed into each SSE chunk so
-// realtime consumers can correlate answers to turn ids.
 async function respondToChat(body, env, ctx, request, meta) {
   let result;
-  try {
-    result = await routeRequest(body, env);
-  } catch (e) {
-    // Always surface a JSON error (never a platform HTML 500) so streaming
-    // clients can see the routing failures and self-heal (e.g. skip a model).
-    const routing = e.attempts ? { attempts: e.attempts } : undefined;
-    return jsonResponse({ error: e.message, ...(routing ? { routing } : {}) }, e.status || 500, request);
-  }
+  try { result = await routeRequest(body, env); }
+  catch (e) { const routing = e.attempts ? { attempts: e.attempts } : undefined; return jsonResponse({ error: e.message, ...(routing ? { routing } : {}) }, e.status || 500, request); }
   const { response, metadata } = result;
-
-  // Track usage without blocking the response (usage tracking must never
-  // jeopardize the request, so failures are swallowed).
-  if (ctx) {
-    ctx.waitUntil(Promise.resolve(trackUsage(request._keyData.id, env, {
-      tokens: response.usage?.total_tokens || 0,
-      model: metadata.model_used,
-    })).catch((err) => console.log('[Usage] tracking error:', err.message)));
-  }
-
-  // Streaming
-  if (response.type === 'stream') {
-    return streamChatResponse(response, metadata, request, meta, ctx);
-  }
-
-  // Non-streaming
+  if (ctx) ctx.waitUntil(Promise.resolve(trackUsage(request._keyData.id, env, { tokens: response.usage?.total_tokens || 0, model: metadata.model_used })).catch((err) => console.log('[Usage] tracking error:', err.message)));
+  if (response.type === 'stream') return streamChatResponse(response, metadata, request, meta, ctx);
   return buildChatResponse(response, metadata, request);
 }
-
 function streamChatResponse(response, metadata, request, meta, ctx) {
   const completionId = `chatcmpl-${crypto.randomUUID()}`;
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
-
   const pump = async () => {
     try {
       for await (const chunk of response.stream) {
         const text = chunk.response || chunk.text || chunk.content || '';
         if (text) {
-          const payload = {
-            id: completionId,
-            object: 'chat.completion.chunk',
-            model: metadata.model_used,
-            task_type: metadata.task_type,
-            choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-          };
+          const payload = { id: completionId, object: 'chat.completion.chunk', model: metadata.model_used, task_type: metadata.task_type, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] };
           if (meta && meta.sessionId) payload.session_id = meta.sessionId;
           if (meta && meta.turnId) payload.turn_id = meta.turnId;
           await writer.write(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
         }
       }
-      const finish = {
-        id: completionId,
-        object: 'chat.completion.chunk',
-        model: metadata.model_used,
-        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-      };
+      const finish = { id: completionId, object: 'chat.completion.chunk', model: metadata.model_used, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] };
       if (meta && meta.sessionId) finish.session_id = meta.sessionId;
       if (meta && meta.turnId) finish.turn_id = meta.turnId;
       await writer.write(encoder.encode(`data: ${JSON.stringify(finish)}\n\n`));
       await writer.write(encoder.encode('data: [DONE]\n\n'));
-    } catch (e) {
-      await writer.write(encoder.encode(`data: ${JSON.stringify({ error: e.message })}\n\n`));
-    } finally {
-      await writer.close();
-    }
+    } catch (e) { await writer.write(encoder.encode(`data: ${JSON.stringify({ error: e.message })}\n\n`)); }
+    finally { await writer.close(); }
   };
-
-  if (ctx) ctx.waitUntil(pump());
-  else pump();
-
-  return new Response(readable, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      ...corsHeaders(request),
-    },
-  });
+  if (ctx) ctx.waitUntil(pump()); else pump();
+  return new Response(readable, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', ...corsHeaders(request) } });
 }
-

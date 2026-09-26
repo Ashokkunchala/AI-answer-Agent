@@ -1,50 +1,65 @@
 # Cloudflare Free-First Stack
 
-AI-Answer-Agent uses Cloudflare as the low-cost control plane while keeping the existing desktop voice pipeline responsible for raw microphone DSP/VAD/STT.
+AI-Answer-Agent uses Cloudflare as the low-cost control plane while keeping the desktop voice pipeline responsible for microphone/audio capture, DSP/VAD and STT.
 
-## Hot path
+## End-to-end interview path
 
 ```text
-Microphone -> Desktop DSP/VAD -> STT -> Worker -> AI Router -> AI Gateway/Workers AI -> streaming answer
+Microphone / WASAPI
+   -> Desktop DSP + VAD
+   -> Streaming STT
+   -> /api/answer
+   -> persisted session context
+   -> AI Router
+   -> Workers AI / optional Gateway
+   -> SSE answer stream
+   -> D1 turn persistence
+
+Interview ends
+   -> POST /api/session/:id/finalize
+   -> Workflow
+   -> AI evaluation
+   -> D1 interview_reports
+   -> GET /api/session/:id/report
 ```
 
-Do not put raw continuous microphone audio into the Worker hot path.
+Raw continuous microphone audio stays out of the Worker hot path.
 
 ## Resource roles
 
-| Resource | Role | Hot path? | Notes |
-|---|---|---:|---|
-| Workers | API + AI orchestration | Yes | Keep CPU work small and stream responses |
-| Durable Objects | Live interview session state | Yes | One logical session/object |
-| AI Gateway | Provider routing/analytics/cache | Yes | Keep Unified Billing disabled for $0 target |
-| KV | Short TTL response/config cache | Yes, optional | `AI_CACHE`; never source of truth |
-| D1 | Interview sessions and turns | No for reads; async writes | Structured persistent state |
-| R2 | Resume/JD/project/transcript/report files | No | Document/object storage |
-| Workers AI | Utility/fallback AI | Yes for lightweight tasks | Conserve the daily free neuron allocation |
-| Queues | Background work | No | Never block answer latency |
-| Workflows | Multi-step post-interview processing | No | Resume/report analysis |
-| Workers Logs | Debugging/latency visibility | No | Keep production observability enabled |
-| Turnstile/WAF | Edge security | No | Add when exposing public endpoints |
-| Browser Run | Agent web research | No | Use only when an agent task needs a browser |
+| Resource | Role | Interview path |
+|---|---|---|
+| Workers | API + orchestration | Live |
+| Durable Objects | Per-session coordination/state foundation | Live/optional |
+| KV | Short TTL response cache | Optional; never source of truth |
+| D1 | Sessions, turns and reports | Persistent |
+| R2 | Resume/JD/transcript/report files | Asset storage |
+| Workers AI | Lightweight/fallback AI | Live |
+| Queue | Background jobs | Async |
+| Workflow | Post-interview scoring/report | Async |
+| Workers Logs | Debugging/latency visibility | Operational |
 
-## What is implemented now
+## Implemented
 
-- Optional KV response caching with a 60-second TTL for non-streaming, non-session requests.
-- Interview turns persist asynchronously to D1 when `INTERVIEW_DB` is configured.
-- R2 helpers for interview assets and document metadata.
-- Cloudflare capability detection helper.
-- SQLite-backed Durable Object implementation for live interview state.
-- Queue consumer skeleton for post-interview jobs.
-- Workflow skeleton for post-interview analysis.
-- D1 migration for interview sessions, turns and asset metadata.
-- Free-tier resource provisioning helper and Wrangler template.
+- KV response caching for safe non-streaming/non-session requests.
+- Persisted interview context is automatically loaded into subsequent `/api/answer` calls.
+- Streaming interview answers are persisted to D1 after the final token without delaying first-token latency.
+- `POST /api/session` creates a durable interview session.
+- `GET /api/session/:id/context` returns persisted turns.
+- `POST /api/session/:id/finalize` starts the post-interview Workflow when configured.
+- `GET /api/session/:id/report` returns the evaluation report.
+- Workflow evaluates technical correctness, communication, confidence and missed points and persists structured JSON.
+- R2 helpers for interview assets.
+- Durable Object implementation for live session state.
+- Queue consumer foundation for non-latency-sensitive jobs.
+- D1 migrations for interview sessions, turns, assets and reports.
 
 ## Bindings
 
-The existing `API_KEYS` and `AI` bindings remain untouched. Add these bindings only after creating the resources:
-
 ```text
-AI_CACHE            KV
+AI                  Workers AI
+API_KEYS            existing API-key KV
+AI_CACHE            optional cache KV
 INTERVIEW_DB        D1
 AI_ASSETS           R2
 INTERVIEW_SESSIONS  Durable Object
@@ -52,25 +67,27 @@ INTERVIEW_QUEUE     Queue
 INTERVIEW_WORKFLOW  Workflow
 ```
 
-See `packages/worker/wrangler.free.example.toml`.
+Use `packages/worker/wrangler.free.example.toml` as the account-specific template. It intentionally contains placeholders for resource IDs because those IDs belong to the user's Cloudflare account.
+
+## Provisioning
+
+```bash
+cd packages/worker
+npm run provision:free
+```
+
+Then copy the returned IDs into your deployment configuration, apply migrations, and deploy:
+
+```bash
+npx wrangler d1 migrations apply ai-answer-agent --remote
+npx wrangler deploy
+```
 
 ## Cost guardrails
 
 - Keep the Free-first architecture as the default.
-- Do not enable AI Gateway Unified Billing for this target.
-- Use Workers AI for lightweight classification/routing/fallback tasks.
-- Use external paid models only through explicit provider secrets and routing rules.
-- Keep background work off the synchronous interview response path.
-- Do not store secrets in Wrangler TOML or source code.
-
-## Provisioning
-
-From the repository root:
-
-```bash
-bash scripts/cloudflare/provision-free-stack.sh
-```
-
-Then populate the returned IDs in the Wrangler template, apply the D1 migration, and deploy.
-
-The Durable Object and Workflow bindings remain deliberately disabled in the template until their classes are exported from the Worker entrypoint. This prevents an infrastructure configuration change from breaking the existing voice service.
+- Do not enable AI Gateway Unified Billing when targeting a $0 Cloudflare architecture.
+- Keep raw audio processing on the desktop.
+- Use Workers AI for lightweight routing/classification where appropriate.
+- Keep background analysis in Workflow/Queue rather than the live answer path.
+- Never commit API tokens or other secrets.

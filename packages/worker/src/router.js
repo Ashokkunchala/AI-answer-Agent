@@ -5,7 +5,7 @@ import { classifyRequest } from './classifier.js';
 import { buildSystemPrompt } from './system-prompts.js';
 import { callCloudflareAI } from './providers/index.js';
 import { callGateway, gatewayUsable } from './providers/gateway.js';
-import { getCachedAIResponse, putCachedAIResponse, saveInterviewTurn } from './platform/cloudflare.js';
+import { getCachedAIResponse, putCachedAIResponse, saveInterviewTurn, getInterviewContext } from './platform/cloudflare.js';
 
 const GATEWAY_FALLBACK_CHAIN = ['gpt-5.6-sol'];
 const CREDIT_COOLDOWN_MS = 10 * 60 * 1000;
@@ -124,15 +124,28 @@ export async function routeRequest(body, env) {
   const taskType = ROUTING_TABLE[body.task_type] ? body.task_type : classifyRequest(messages);
   console.log(`[Router] Task: ${taskType} | Model: ${explicitModel || 'auto'}`);
 
+  const persistedContext = body.sessionId && env.INTERVIEW_DB
+    ? await getInterviewContext(env, body.sessionId, body.context_limit || 12)
+    : [];
+
   const context = {
     resume: body.resume,
     jobDesc: body.jobDesc,
     targetName: body.targetName,
     participants: body.participants,
   };
+
+  const contextMessages = persistedContext.length
+    ? persistedContext.flatMap((turn) => [
+      { role: 'user', content: `[Previous interview question] ${turn.question}` },
+      { role: 'assistant', content: `[Previous interview answer] ${turn.answer}` },
+    ])
+    : [];
+
+  const boundedContextMessages = contextMessages.slice(-24);
   const enhancedMessages = body.raw
     ? messages
-    : injectSystemPrompt(messages, taskType, body.system, context);
+    : injectSystemPrompt([...boundedContextMessages, ...messages], taskType, body.system, context);
 
   const cached = await getCachedAIResponse(env, body, taskType);
   if (cached?.response) {
