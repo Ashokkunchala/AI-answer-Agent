@@ -5,15 +5,9 @@ import { classifyRequest } from './classifier.js';
 import { buildSystemPrompt } from './system-prompts.js';
 import { callCloudflareAI } from './providers/index.js';
 import { callGateway, gatewayUsable } from './providers/gateway.js';
+import { getCachedAIResponse, putCachedAIResponse, saveInterviewTurn } from './platform/cloudflare.js';
 
-// AI Gateway safety-net models tried after the Workers AI chain is exhausted.
-// Kept tiny (cheap during promo) and only invoked as a last resort.
 const GATEWAY_FALLBACK_CHAIN = ['gpt-5.6-sol'];
-
-// Models that recently failed with credit/quota errors are skipped inside
-// routing chains for a while, so a degraded account stops paying a repeated
-// ~1s dead attempt on every request. Explicitly-requested models are always
-// honored (a direct ask for a model is the client's choice).
 const CREDIT_COOLDOWN_MS = 10 * 60 * 1000;
 const creditCooldowns = new Map();
 const CREDIT_ERROR_RE = /insufficient|quota|credit|ai gateway|billing/i;
@@ -37,7 +31,6 @@ export function httpError(status, message) {
   return err;
 }
 
-// Helper to create a timeout promise
 function timeoutPromise(ms, promise) {
   return Promise.race([
     promise,
@@ -50,7 +43,6 @@ function getRouteChain(taskType) {
   return route.chains;
 }
 
-// Dispatch to the right provider based on the model's configured provider flag.
 function callProvider(modelKey, messages, options, env) {
   const modelConfig = MODELS[modelKey];
   if (modelConfig?.provider === 'gateway') {
@@ -74,7 +66,36 @@ function injectSystemPrompt(messages, taskType, customSystemPrompt, context = {}
   return [{ role: 'system', content: systemContent }, ...messages];
 }
 
-// body is the already-parsed request body (not a Request object)
+function lastUserMessage(messages) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === 'user') return String(messages[i].content || '');
+  }
+  return '';
+}
+
+function scheduleInterviewPersistence(env, body, taskType, response, metadata) {
+  if (!body.sessionId || !env.INTERVIEW_DB || response?.type === 'stream') return;
+  const answer = String(response?.content || '');
+  const question = lastUserMessage(Array.isArray(body.messages) ? body.messages : []);
+  saveInterviewTurn(env, {
+    sessionId: body.sessionId,
+    turnId: body.turnId,
+    question,
+    answer,
+    taskType,
+    model: metadata.model_used,
+    latencyMs: metadata.latency_ms,
+    candidateName: body.candidateName,
+    roleTitle: body.roleTitle,
+    company: body.company,
+  }).catch((error) => console.warn('[Interview] D1 persistence error:', error?.message || error));
+}
+
+function scheduleCacheWrite(env, body, taskType, response) {
+  putCachedAIResponse(env, body, taskType, response)
+    .catch((error) => console.warn('[Cloudflare KV] cache write error:', error?.message || error));
+}
+
 export async function routeRequest(body, env) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   if (!messages.length) {
@@ -91,7 +112,6 @@ export async function routeRequest(body, env) {
     target_lang: body.target_lang,
   };
 
-  // Explicit model override — unknown models are a hard error (OpenAI-compatible behavior)
   let explicitModel = null;
   if (body.model && body.model !== 'auto' && body.model !== 'devops-agent') {
     if (MODELS[body.model]) {
@@ -101,11 +121,9 @@ export async function routeRequest(body, env) {
     }
   }
 
-  // Classify the request (explicit task_type override wins when valid)
   const taskType = ROUTING_TABLE[body.task_type] ? body.task_type : classifyRequest(messages);
   console.log(`[Router] Task: ${taskType} | Model: ${explicitModel || 'auto'}`);
 
-  // Inject system prompt (skipped in raw/playground mode)
   const context = {
     resume: body.resume,
     jobDesc: body.jobDesc,
@@ -116,15 +134,30 @@ export async function routeRequest(body, env) {
     ? messages
     : injectSystemPrompt(messages, taskType, body.system, context);
 
-  // Get routing chain
+  const cached = await getCachedAIResponse(env, body, taskType);
+  if (cached?.response) {
+    return {
+      response: cached.response,
+      metadata: {
+        task_type: taskType,
+        task_label: ROUTING_TABLE[taskType]?.label || 'General',
+        model_used: cached.response.model_used || explicitModel || 'cached',
+        model_id: cached.response.model_id || null,
+        routing_reason: 'Cloudflare KV cache',
+        latency_ms: 0,
+        all_attempts: [{ status: 'cache-hit' }],
+        cache_hit: true,
+      },
+    };
+  }
+
   const chain = explicitModel
     ? [{ model: explicitModel, reason: 'explicitly requested' }]
     : getRouteChain(taskType);
 
   const attempts = [];
-
-  // Try each model in the chain
   let lastError = null;
+
   for (const route of chain) {
     const modelKey = route.model;
     const modelConfig = MODELS[modelKey];
@@ -134,15 +167,11 @@ export async function routeRequest(body, env) {
       continue;
     }
 
-    // Gateway models are skipped (not errors) when the gateway isn't configured,
-    // so auto-routing degrades silently to Workers AI with no spurious failures.
     if (modelConfig.provider === 'gateway' && !gatewayUsable(env)) {
       attempts.push({ model: modelKey, status: 'skipped', reason: 'AI Gateway not configured' });
       continue;
     }
 
-    // Auto-routing skips models on credit cooldown (a recent quota/credit
-    // failure) so the chain falls through to a healthy model immediately.
     if (!explicitModel && isCreditCooledDown(modelKey)) {
       attempts.push({ model: modelKey, status: 'skipped', reason: 'credit cooldown active' });
       continue;
@@ -150,31 +179,31 @@ export async function routeRequest(body, env) {
 
     try {
       const startTime = Date.now();
-      // Use per-model max_tokens when user hasn't specified one
       const modelMaxTokens = MODELS[modelKey]?.max_tokens;
       const reqOptions = {
         ...options,
         max_tokens: options.max_tokens || modelMaxTokens || 4096,
       };
-      // Add timeout for individual model requests (30 seconds)
       const response = await timeoutPromise(30000, callProvider(modelKey, enhancedMessages, reqOptions, env));
       const elapsed = Date.now() - startTime;
       creditCooldowns.delete(modelKey);
 
       attempts.push({ model: modelKey, modelId: modelConfig.id, status: 'success', latency_ms: elapsed });
 
-      return {
-        response,
-        metadata: {
-          task_type: taskType,
-          task_label: ROUTING_TABLE[taskType]?.label || 'General',
-          model_used: modelKey,
-          model_id: modelConfig.id,
-          routing_reason: route.reason,
-          latency_ms: elapsed,
-          all_attempts: attempts,
-        },
+      const metadata = {
+        task_type: taskType,
+        task_label: ROUTING_TABLE[taskType]?.label || 'General',
+        model_used: modelKey,
+        model_id: modelConfig.id,
+        routing_reason: route.reason,
+        latency_ms: elapsed,
+        all_attempts: attempts,
       };
+
+      scheduleCacheWrite(env, body, taskType, response);
+      scheduleInterviewPersistence(env, body, taskType, response, metadata);
+
+      return { response, metadata };
     } catch (error) {
       lastError = error;
       learnCreditCooldown(modelKey, error.message);
@@ -183,13 +212,11 @@ export async function routeRequest(body, env) {
     }
   }
 
-  // ── Safety net: if every model in the chain failed and the AI Gateway is
-  // configured, guarantee an answer by falling back to a premium gateway model.
   if (gatewayUsable(env)) {
     for (const modelKey of GATEWAY_FALLBACK_CHAIN) {
       const modelConfig = MODELS[modelKey];
       if (!modelConfig) continue;
-      if (attempts.some((a) => a.model === modelKey)) continue; // already tried
+      if (attempts.some((a) => a.model === modelKey)) continue;
       try {
         const startTime = Date.now();
         const fallbackMaxTokens = MODELS[modelKey]?.max_tokens || 4096;
@@ -199,18 +226,18 @@ export async function routeRequest(body, env) {
         }, env));
         const elapsed = Date.now() - startTime;
         attempts.push({ model: modelKey, modelId: modelConfig.id, status: 'success', latency_ms: elapsed, fallback: true });
-        return {
-          response,
-          metadata: {
-            task_type: taskType,
-            task_label: ROUTING_TABLE[taskType]?.label || 'General',
-            model_used: modelKey,
-            model_id: modelConfig.id,
-            routing_reason: 'safety-net fallback after Workers AI chain failed',
-            latency_ms: elapsed,
-            all_attempts: attempts,
-          },
+        const metadata = {
+          task_type: taskType,
+          task_label: ROUTING_TABLE[taskType]?.label || 'General',
+          model_used: modelKey,
+          model_id: modelConfig.id,
+          routing_reason: 'safety-net fallback after Workers AI chain failed',
+          latency_ms: elapsed,
+          all_attempts: attempts,
         };
+        scheduleCacheWrite(env, body, taskType, response);
+        scheduleInterviewPersistence(env, body, taskType, response, metadata);
+        return { response, metadata };
       } catch (error) {
         lastError = error;
         attempts.push({ model: modelKey, status: 'error', error: error.message, fallback: true });

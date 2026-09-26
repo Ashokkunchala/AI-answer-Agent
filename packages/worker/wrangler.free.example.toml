@@ -1,0 +1,71 @@
+# Copy the relevant bindings into wrangler.toml after creating the resources.
+# This file is intentionally separate so existing production bindings are not
+# overwritten and the project continues to deploy before infrastructure setup.
+
+name = "devops-ai-agent"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+# Existing Workers AI binding
+[ai]
+binding = "AI"
+
+# Existing API key KV plus an independent cache KV.
+# Create with:
+#   npx wrangler kv namespace create AI_CACHE
+[[kv_namespaces]]
+binding = "API_KEYS"
+id = "REPLACE_WITH_EXISTING_API_KEYS_NAMESPACE_ID"
+
+[[kv_namespaces]]
+binding = "AI_CACHE"
+id = "REPLACE_WITH_AI_CACHE_NAMESPACE_ID"
+
+# D1 - interview/session persistence
+# Create with:
+#   npx wrangler d1 create ai-answer-agent
+# Then set the returned database_id here.
+[[d1_databases]]
+binding = "INTERVIEW_DB"
+database_name = "ai-answer-agent"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+# R2 - resumes, job descriptions, project files, transcripts and reports.
+# Create with:
+#   npx wrangler r2 bucket create ai-answer-agent-assets
+[[r2_buckets]]
+binding = "AI_ASSETS"
+bucket_name = "ai-answer-agent-assets"
+
+# Durable Object for one live interview session per object id.
+# Requires a migration and an exported InterviewSession class from the Worker.
+# Keep this block commented until the class is wired into the Worker entrypoint.
+# [[durable_objects.bindings]]
+# name = "INTERVIEW_SESSIONS"
+# class_name = "InterviewSession"
+# [[migrations]]
+# tag = "v1"
+# new_sqlite_classes = ["InterviewSession"]
+
+# Queue for background transcript/report processing.
+# Create with:
+#   npx wrangler queues create ai-answer-agent-interview
+# [[queues.producers]]
+# binding = "INTERVIEW_QUEUE"
+# queue = "ai-answer-agent-interview"
+
+# Workflow for multi-step resume/interview analysis.
+# Enable after adding the Workflow class to the Worker entrypoint.
+# [[workflows]]
+# name = "interview-analysis"
+# binding = "INTERVIEW_WORKFLOW"
+# class_name = "InterviewAnalysisWorkflow"
+
+# AI Gateway remains optional. Prefer secrets over plaintext variables.
+#   npx wrangler secret put GATEWAY_API_TOKEN
+#   npx wrangler secret put GATEWAY_NAME
