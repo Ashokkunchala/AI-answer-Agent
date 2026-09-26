@@ -29,7 +29,6 @@ const worker = {
         return new Response(JSON.stringify({
           error: 'rate_limit_exceeded',
           message: 'Too many requests. Retry after the reset time.',
-          client: clientIdentity(request),
         }), {
           status: 429,
           headers: {
