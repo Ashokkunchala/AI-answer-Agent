@@ -1,17 +1,9 @@
-/**
- * Cloudflare Workflow for post-interview analysis.
- *
- * Enable this binding only after the class is exported from the Worker
- * entrypoint. Steps are intentionally idempotent and safe to retry.
- */
-export class InterviewAnalysisWorkflow {
-  constructor(env, ctx) {
-    this.env = env;
-    this.ctx = ctx;
-  }
+import { WorkflowEntrypoint } from 'cloudflare:workers';
 
+/** Post-interview analysis workflow. */
+export class InterviewAnalysisWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
-    const sessionId = String(event?.sessionId || '');
+    const sessionId = String(event?.payload?.sessionId || event?.sessionId || '');
     if (!sessionId) return { status: 'skipped', reason: 'sessionId missing' };
 
     const turns = await step.do('load-interview', async () => {
