@@ -9,7 +9,7 @@ A low-latency interview copilot that helps the user understand a live question, 
 ```text
 Desktop microphone
   -> local DSP / echo cancellation / VAD
-  -> streaming STT
+  -> streaming STT or interview WebSocket
   -> stable-transcript detector
   -> question classifier
   -> resume + JD + session context
@@ -42,7 +42,7 @@ Never invent personal experience, employers, metrics, certifications or producti
 
 ## Answer quality
 
-Every non-streaming interview answer can receive deterministic local signals for:
+Every interview answer can receive deterministic local signals for:
 
 - relevance
 - clarity
@@ -51,11 +51,29 @@ Every non-streaming interview answer can receive deterministic local signals for
 - excessive length
 - unsupported first-person experience claims
 
-These are review signals, not claims about truth. A stronger production implementation should combine them with an explicit model-based evaluator during post-interview analysis.
+These are review signals, not claims about truth. The post-interview Workflow can combine them with model-based evaluation.
+
+## Live voice WebSocket
+
+`/voice-socket` now uses the interview-aware Worker entrypoint. A client can send:
+
+```json
+{"type":"start","session_id":"optional","language":"en","auto_answer":true,"resume":"...","jobDesc":"..."}
+```
+
+Then send audio chunks as JSON base64 (`{"audio":"..."}`) or binary frames. Finish the current question with:
+
+```json
+{"type":"end","mime":"audio/webm"}
+```
+
+The server emits `session_started`, `buffered`, `transcript`, and `answer` events. Answer events include the detected interview mode, deterministic quality signals, model used, latency and likely follow-ups.
+
+This WebSocket path is optimized for reliable question-level turns. For true continuous low-latency STT, prefer the existing `/v1/audio/stream` path with local VAD/stable-transcript detection.
 
 ## Follow-ups
 
-After an answer, a background task can generate likely interviewer follow-ups. Follow-ups should never block the first answer token.
+Follow-up candidates are generated from the detected interview mode and question. They never block the first answer. Post-interview model evaluation can provide richer follow-ups later.
 
 ## Storage
 
@@ -88,6 +106,17 @@ Cloudflare recommends bindings for direct access to D1/KV/R2/Queues/Workflows an
 - Expire sessions.
 - Add rate limiting before public production exposure.
 - Use least-privilege Cloudflare tokens for CI/CD.
+
+## Production checklist
+
+1. Provision the Cloudflare resources and fill the binding IDs.
+2. Apply all D1 migrations.
+3. Deploy with the current Wrangler configuration.
+4. Test `/health`, `/api/session`, `/api/answer`, `/voice-socket`, `/v1/audio/stream` and `/api/session/:id/finalize`.
+5. Measure STT latency, first answer token latency, total answer latency and cache hit rate.
+6. Test reconnects and abandoned WebSocket sessions.
+7. Enable rate limiting/authentication before exposing the service publicly.
+8. Run a full mock interview and verify the persisted report.
 
 ## Cloudflare architecture
 
