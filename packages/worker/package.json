@@ -9,7 +9,7 @@
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "provision:free": "bash ../../scripts/cloudflare/provision-free-stack.sh",
-    "test:interview": "node src/interview/intelligence.test.js"
+    "test:interview": "node --test src/interview/*.test.js"
   },
   "devDependencies": {
     "wrangler": "^3.114.0"
