@@ -1,15 +1,11 @@
-/**
- * SQLite-backed Durable Object for one live interview session.
- *
- * The Worker entrypoint should export this class and bind it as
- * INTERVIEW_SESSIONS after the resource is created. It is intentionally
- * isolated so existing voice WebSocket behavior is unchanged until enabled.
- */
-export class InterviewSession {
-  constructor(state) {
-    this.state = state;
-    this.sql = state.storage.sql;
-    this.ready = state.blockConcurrencyWhile(async () => {
+import { DurableObject } from 'cloudflare:workers';
+
+/** SQLite-backed Durable Object for one live interview session. */
+export class InterviewSession extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.sql = ctx.storage.sql;
+    this.ready = ctx.blockConcurrencyWhile(async () => {
       await this.initialize();
     });
   }
@@ -17,12 +13,11 @@ export class InterviewSession {
   async fetch(request) {
     await this.ready;
     const url = new URL(request.url);
+
     if (request.method === 'GET' && url.pathname === '/state') {
-      const rows = this.sql.exec(
-        `SELECT key, value FROM session_state ORDER BY key`
-      ).toArray();
+      const rows = this.sql.exec('SELECT key, value FROM session_state ORDER BY key').toArray();
       return Response.json({
-        session_id: this.state.id.toString(),
+        session_id: this.ctx.id.toString(),
         state: Object.fromEntries(rows.map((row) => [row.key, JSON.parse(row.value)])),
       });
     }
