@@ -11,6 +11,8 @@
     "dev:desktop": "npm run start -w packages/desktop",
     "build:worker": "npm run deploy -w packages/worker",
     "build:desktop": "npm run build -w packages/desktop",
+    "test:interview": "node --test packages/worker/src/interview/*.test.js",
+    "preflight:cloudflare": "node scripts/cloudflare/preflight.mjs",
     "install:all": "npm install"
   },
   "engines": {
