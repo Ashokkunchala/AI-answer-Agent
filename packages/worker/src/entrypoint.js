@@ -16,51 +16,55 @@ function withSecurity(response, decision) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+function upgradeWebSocket(request, env, ctx) {
+  const pair = new WebSocketPair();
+  const [client, server] = Object.values(pair);
+  server.accept();
+  ctx.waitUntil(handleInterviewVoiceSocket(server, env, ctx));
+
+  const decision = rateLimitDecision(request, VOICE_LIMIT);
+  const headers = securityHeaders(rateLimitHeaders(decision));
+  return new Response(null, { status: 101, webSocket: client, headers });
+}
+
 const worker = {
   ...app,
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const isVoiceUpgrade = url.pathname === '/voice-socket' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
-    const limit = isVoiceUpgrade ? VOICE_LIMIT : API_LIMIT;
 
-    if (!PUBLIC.has(url.pathname)) {
-      const decision = rateLimitDecision(request, limit);
+    if (isVoiceUpgrade) {
+      const decision = rateLimitDecision(request, VOICE_LIMIT);
       if (!decision.allowed) {
-        return new Response(JSON.stringify({
-          error: 'rate_limit_exceeded',
-          message: 'Too many requests. Retry after the reset time.',
-        }), {
+        return new Response(JSON.stringify({ error: 'rate_limit_exceeded', message: 'Too many voice connections. Retry later.' }), {
           status: 429,
-          headers: {
-            'Content-Type': 'application/json',
-            ...securityHeaders(rateLimitHeaders(decision)),
-            'Retry-After': String(Math.max(1, Math.ceil((decision.resetAt - Date.now()) / 1000))),
-          },
+          headers: { 'Content-Type': 'application/json', ...securityHeaders(rateLimitHeaders(decision)), 'Retry-After': String(Math.max(1, Math.ceil((decision.resetAt - Date.now()) / 1000))) },
         });
       }
-
-      try {
-        const response = await handleInterviewAPI(request, env, ctx, (nextRequest) => app.fetch(nextRequest, env, ctx));
-        return withSecurity(response, decision);
-      } catch (error) {
-        return new Response(JSON.stringify({ error: safeErrorMessage(error) }), {
-          status: error?.status || 500,
-          headers: { 'Content-Type': 'application/json', ...securityHeaders(rateLimitHeaders(decision)) },
-        });
-      }
+      return upgradeWebSocket(request, env, ctx);
     }
 
-    const response = await handleInterviewAPI(request, env, ctx, (nextRequest) => app.fetch(nextRequest, env, ctx));
-    const decision = rateLimitDecision(request, Math.max(API_LIMIT, 300));
-    return withSecurity(response, decision);
+    const limit = PUBLIC.has(url.pathname) ? API_LIMIT : API_LIMIT;
+    const decision = rateLimitDecision(request, limit);
+    if (!decision.allowed) {
+      return new Response(JSON.stringify({ error: 'rate_limit_exceeded', message: 'Too many requests. Retry after the reset time.' }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json', ...securityHeaders(rateLimitHeaders(decision)), 'Retry-After': String(Math.max(1, Math.ceil((decision.resetAt - Date.now()) / 1000))) },
+      });
+    }
+
+    try {
+      const response = await handleInterviewAPI(request, env, ctx, (nextRequest) => app.fetch(nextRequest, env, ctx));
+      return withSecurity(response, decision);
+    } catch (error) {
+      return new Response(JSON.stringify({ error: safeErrorMessage(error) }), {
+        status: error?.status || 500,
+        headers: { 'Content-Type': 'application/json', ...securityHeaders(rateLimitHeaders(decision)) },
+      });
+    }
   },
   async queue(batch, env, ctx) {
     await handleInterviewQueue(batch, env, ctx);
-  },
-  websocket: {
-    async handle(webSocket, env, ctx) {
-      await handleInterviewVoiceSocket(webSocket, env, ctx);
-    },
   },
 };
 
