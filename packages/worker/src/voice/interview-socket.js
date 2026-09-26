@@ -2,7 +2,7 @@ import { transcribe } from '../providers/transcription.js';
 import { routeRequest } from '../router.js';
 import { base64ToBytes, concatenateChunks } from '../../../../shared/utils.js';
 import { interviewMode, likelyFollowUps, scoreAnswerHeuristically } from '../interview/intelligence.js';
-import { retrieveInterviewContext, formatRetrievedContext } from '../interview/retrieval.js';
+import { retrieveInterviewContext, formatRetrievedContext, indexInterviewDocument } from '../interview/retrieval.js';
 
 const MAX_SESSION_BYTES = 25 * 1024 * 1024;
 const MAX_HISTORY = 12;
@@ -19,16 +19,19 @@ async function persistSessionState(env, session) {
     await stub.fetch('https://interview-session/state', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        status: 'active',
-        language: session.language,
-        model: session.model,
-        updated_at: new Date().toISOString(),
-      }),
+      body: JSON.stringify({ status: 'active', language: session.language, model: session.model, updated_at: new Date().toISOString() }),
     });
   } catch (error) {
     console.warn('[Interview Voice] durable state unavailable:', error?.message || error);
   }
+}
+
+async function indexCandidateContext(env, session) {
+  if (!env?.VECTORIZE || !env?.AI) return;
+  const jobs = [];
+  if (session.resume) jobs.push(indexInterviewDocument(env, { id: `${session.id}:resume`, text: session.resume, type: 'resume', sessionId: session.id }));
+  if (session.jobDesc) jobs.push(indexInterviewDocument(env, { id: `${session.id}:job`, text: session.jobDesc, type: 'job_description', sessionId: session.id }));
+  await Promise.all(jobs);
 }
 
 function makeQuestionPrompt(session, transcript, retrievedContext = '') {
@@ -39,7 +42,6 @@ function makeQuestionPrompt(session, transcript, retrievedContext = '') {
   const grounding = retrievedContext
     ? `\nRelevant candidate context retrieved from semantic memory:\n${retrievedContext}\nUse it only when it supports the candidate context. Do not invent experience.`
     : '';
-
   return {
     model: session.model || 'auto',
     messages: [
@@ -66,37 +68,25 @@ export async function handleInterviewVoiceSocket(webSocket, env, ctx) {
 
       if (data?.type === 'start') {
         session = {
-          id: String(data.session_id || crypto.randomUUID()),
-          chunks: [], bytes: 0, startedAt: Date.now(),
-          language: data.language || 'en', model: data.model || 'auto',
-          max_tokens: data.max_tokens || 512, temperature: data.temperature ?? 0.3,
-          auto_answer: data.auto_answer !== false,
+          id: String(data.session_id || crypto.randomUUID()), chunks: [], bytes: 0, startedAt: Date.now(),
+          language: data.language || 'en', model: data.model || 'auto', max_tokens: data.max_tokens || 512,
+          temperature: data.temperature ?? 0.3, auto_answer: data.auto_answer !== false,
           resume: data.resume || '', jobDesc: data.jobDesc || '', targetName: data.targetName || '',
           history: Array.isArray(data.history) ? data.history.slice(-MAX_HISTORY) : [],
         };
         ctx?.waitUntil?.(persistSessionState(env, session));
+        ctx?.waitUntil?.(indexCandidateContext(env, session));
         send(webSocket, { type: 'session_started', session_id: session.id, status: 'ready', retrieval: Boolean(env?.VECTORIZE) });
         return;
       }
 
-      if (!session) {
-        send(webSocket, { type: 'error', error: 'Send a start message before audio.' });
-        return;
-      }
-
-      if (data?.type === 'reset') {
-        session.chunks = []; session.bytes = 0;
-        send(webSocket, { type: 'buffer_reset' });
-        return;
-      }
+      if (!session) { send(webSocket, { type: 'error', error: 'Send a start message before audio.' }); return; }
+      if (data?.type === 'reset') { session.chunks = []; session.bytes = 0; send(webSocket, { type: 'buffer_reset' }); return; }
 
       if (data?.type === 'end') {
         const audio = concatenateChunks(session.chunks);
         session.chunks = []; session.bytes = 0;
-        if (!audio.byteLength) {
-          send(webSocket, { type: 'transcript', text: '', error: 'No audio data' });
-          return;
-        }
+        if (!audio.byteLength) { send(webSocket, { type: 'transcript', text: '', error: 'No audio data' }); return; }
 
         const sttStarted = Date.now();
         const result = await transcribe(env, audio, { model: session.model, language: session.language }, data.mime || 'audio/webm');
@@ -112,9 +102,7 @@ export async function handleInterviewVoiceSocket(webSocket, env, ctx) {
         const mode = interviewMode(transcript, routed.metadata?.task_type || 'interview');
         const quality = scoreAnswerHeuristically(transcript, answer, { resume: session.resume, jobDesc: session.jobDesc, taskType: routed.metadata?.task_type || 'interview' });
         const followups = likelyFollowUps(transcript, mode);
-
-        session.history.push({ question: transcript, answer });
-        session.history = session.history.slice(-MAX_HISTORY);
+        session.history.push({ question: transcript, answer }); session.history = session.history.slice(-MAX_HISTORY);
         ctx?.waitUntil?.(persistSessionState(env, session));
 
         send(webSocket, {
@@ -126,21 +114,12 @@ export async function handleInterviewVoiceSocket(webSocket, env, ctx) {
       }
 
       if (typeof data?.audio === 'string') {
-        const bytes = base64ToBytes(data.audio);
-        session.chunks.push(bytes); session.bytes += bytes.byteLength;
+        const bytes = base64ToBytes(data.audio); session.chunks.push(bytes); session.bytes += bytes.byteLength;
       } else if (data instanceof ArrayBuffer) {
-        const bytes = new Uint8Array(data);
-        session.chunks.push(bytes); session.bytes += bytes.byteLength;
-      } else {
-        send(webSocket, { type: 'error', error: 'Invalid audio chunk. Use base64 JSON audio or binary frames.' });
-        return;
-      }
+        const bytes = new Uint8Array(data); session.chunks.push(bytes); session.bytes += bytes.byteLength;
+      } else { send(webSocket, { type: 'error', error: 'Invalid audio chunk. Use base64 JSON audio or binary frames.' }); return; }
 
-      if (session.bytes > MAX_SESSION_BYTES) {
-        session = null;
-        send(webSocket, { type: 'error', error: 'Audio session exceeded 25MB limit.' });
-        return;
-      }
+      if (session.bytes > MAX_SESSION_BYTES) { session = null; send(webSocket, { type: 'error', error: 'Audio session exceeded 25MB limit.' }); return; }
       send(webSocket, { type: 'buffered', bytes: session.bytes });
     } catch (error) {
       console.error('[Interview Voice] error:', error?.message || error);
