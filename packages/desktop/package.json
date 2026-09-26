@@ -10,6 +10,7 @@
     "build:dir": "electron-builder --win dir",
     "build:portable": "electron-builder --win portable",
     "test:voice": "node --test --test-reporter=spec \"src/voice/tests/*.test.js\"",
+    "test:jarvis": "node --test --test-reporter=spec src/jarvis/jarvis.test.js",
     "benchmark": "node src/voice/cli-benchmark.js"
   },
   "author": "DevOps AI Agent",
@@ -29,20 +30,9 @@
   "build": {
     "appId": "com.devopsaiagent.desktop",
     "productName": "DevOps AI Answer Agent",
-    "directories": {
-      "output": "release"
-    },
+    "directories": { "output": "release" },
     "npmRebuild": false,
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
@@ -54,9 +44,6 @@
       "deleteAppDataOnUninstall": false,
       "runAfterFinish": true
     },
-    "files": [
-      "src/**/*",
-      "renderer/**/*"
-    ]
+    "files": ["src/**/*", "renderer/**/*"]
   }
 }
