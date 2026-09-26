@@ -4,7 +4,7 @@ import { InterviewAnalysisWorkflow } from './workflows/interview-analysis.js';
 import { handleInterviewQueue } from './queues/interview.js';
 import { handleInterviewAPI } from './interview-api.js';
 import { handleInterviewVoiceSocket } from './voice/interview-socket.js';
-import { clientIdentity, rateLimitDecision, rateLimitHeaders, securityHeaders, safeErrorMessage } from './security.js';
+import { rateLimitDecision, rateLimitHeaders, securityHeaders, safeErrorMessage } from './security.js';
 
 const PUBLIC = new Set(['/', '/health', '/v1/models', '/v1/tasks']);
 const API_LIMIT = 120;
