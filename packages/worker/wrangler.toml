@@ -1,5 +1,5 @@
 name = "devops-ai-agent"
-main = "src/index.js"
+main = "src/entrypoint.js"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
@@ -9,22 +9,56 @@ enabled = true
 [vars]
 ENVIRONMENT = "production"
 
-# “€â”€ Optional: AI Gateway premium fallback (gpt-5.6-sol) â”€â”€
-# Uncomment and fill in to enable the safety-net gateway provider.
-# GATEWAY_ACCOUNT_ID = "your_24_hex_cloudflare_account_id"
-# GATEWAY_NAME = "generic"
-# Prefer secrets (wrangler secret put) over plaintext VARS:
-#   GATEWAY_API_TOKEN  ->  Cloudflare API token (AI Gateway permission)
-#   GATEWAY_API_KEY    ->  legacy AI Gateway /v1 endpoint key (subset of token auth)
-# Set via: npx wrangler secret put GATEWAY_API_TOKEN
+# Optional AI Gateway premium fallback.
+# Prefer secrets over plaintext values:
+#   npx wrangler secret put GATEWAY_API_TOKEN
+#   npx wrangler secret put GATEWAY_API_KEY
 
 [[kv_namespaces]]
 binding = "API_KEYS"
-# Replace with your own KV namespace ID after running: npx wrangler kv namespace create API_KEYS
+# Existing API_KEYS namespace.
 id = "c86c6823303947c49f35fa12cb52df8f"
 
 [ai]
 binding = "AI"
 
-[[websockets]]
-binding = "VOICE_SOCKET"
+# Existing voice endpoint is handled by the Worker WebSocket export.
+# No separate websocket binding is required by the application.
+
+# -----------------------------------------------------------------------------
+# OPTIONAL CLOUDflare FREE-FIRST EXTENSIONS
+# -----------------------------------------------------------------------------
+# Add the resource IDs after provisioning them. Keeping these commented means
+# the existing deployment remains usable before account-specific resources are
+# created.
+#
+# [[kv_namespaces]]
+# binding = "AI_CACHE"
+# id = "YOUR_AI_CACHE_KV_ID"
+#
+# [[d1_databases]]
+# binding = "INTERVIEW_DB"
+# database_name = "ai-answer-agent"
+# database_id = "YOUR_D1_DATABASE_ID"
+# migrations_dir = "migrations"
+#
+# [[r2_buckets]]
+# binding = "AI_ASSETS"
+# bucket_name = "ai-answer-agent-assets"
+#
+# [[durable_objects.bindings]]
+# name = "INTERVIEW_SESSIONS"
+# class_name = "InterviewSession"
+#
+# [[migrations]]
+# tag = "v1"
+# new_sqlite_classes = ["InterviewSession"]
+#
+# [[queues.producers]]
+# binding = "INTERVIEW_QUEUE"
+# queue = "ai-answer-agent-interview"
+#
+# [[workflows]]
+# name = "interview-analysis"
+# binding = "INTERVIEW_WORKFLOW"
+# class_name = "InterviewAnalysisWorkflow"
