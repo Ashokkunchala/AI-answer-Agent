@@ -84,6 +84,17 @@ export async function saveInterviewTurn(env, turn) {
 
   try {
     await env.INTERVIEW_DB.prepare(`
+      INSERT OR IGNORE INTO interview_sessions
+        (id, candidate_name, role_title, company, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'active', datetime('now'), datetime('now'))
+    `).bind(
+      sessionId,
+      turn.candidateName ? String(turn.candidateName) : null,
+      turn.roleTitle ? String(turn.roleTitle) : null,
+      turn.company ? String(turn.company) : null,
+    ).run();
+
+    await env.INTERVIEW_DB.prepare(`
       INSERT INTO interview_turns
         (id, session_id, question, answer, task_type, model, latency_ms, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
@@ -96,6 +107,10 @@ export async function saveInterviewTurn(env, turn) {
       String(turn.model || 'auto'),
       Number(turn.latencyMs || 0),
     ).run();
+
+    await env.INTERVIEW_DB.prepare(`
+      UPDATE interview_sessions SET updated_at = datetime('now') WHERE id = ?
+    `).bind(sessionId).run();
 
     return { persisted: true, turnId };
   } catch (error) {
