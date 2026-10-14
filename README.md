@@ -30,6 +30,17 @@ AI interview evaluation
 D1 interview report
 ```
 
+## Troubleshoot: `ECONNREFUSED 127.0.0.1:8787`
+
+This means a CLI is trying to connect to a local Worker, but no process is listening at that address.
+
+1. Open a terminal at the repository root and start the Worker: `npm run dev:worker`.
+2. Leave that terminal running and wait for Wrangler to print its local URL.
+3. In a second terminal, run `npm run check:worker`.
+4. Retry the CLI after the health check succeeds.
+
+If Wrangler selects another port, set `WORKER_URL` to the URL Wrangler printed. The preflight checks connectivity only; it does not prove that AI provider credentials or model routing are configured correctly.
+
 ## Capabilities
 
 | Capability | Status |
