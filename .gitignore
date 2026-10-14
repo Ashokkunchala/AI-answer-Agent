@@ -21,6 +21,7 @@ Thumbs.db
 # Environment
 .env
 .env.local
+.agent/config.json
 
 # Electron
 out/

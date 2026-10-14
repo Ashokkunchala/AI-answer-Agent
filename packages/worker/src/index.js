@@ -439,7 +439,10 @@ function attachmentsFrom(response) {
   return null;
 }
 function buildChatResponse(response, metadata, request) {
-  const base = { id: `chatcmpl-${crypto.randomUUID()}`, object: 'chat.completion', model: metadata.model_used, task_type: metadata.task_type, task_label: metadata.task_label, routing: { reason: metadata.routing_reason, attempts: metadata.all_attempts }, choices: [{ index: 0, message: { role: 'assistant', content: response.content ?? '' }, finish_reason: 'stop' }], usage: response.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }, _metadata: { latency_ms: metadata.latency_ms, model: metadata.model_used, model_id: metadata.model_id } };
+  const toolCalls = Array.isArray(response.tool_calls) ? response.tool_calls : [];
+  const message = { role: 'assistant', content: response.content ?? '' };
+  if (toolCalls.length) message.tool_calls = toolCalls;
+  const base = { id: `chatcmpl-${crypto.randomUUID()}`, object: 'chat.completion', model: metadata.model_used, task_type: metadata.task_type, task_label: metadata.task_label, routing: { reason: metadata.routing_reason, attempts: metadata.all_attempts }, choices: [{ index: 0, message, finish_reason: toolCalls.length ? 'tool_calls' : 'stop' }], usage: response.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }, _metadata: { latency_ms: metadata.latency_ms, model: metadata.model_used, model_id: metadata.model_id } };
   const attachments = attachmentsFrom(response); if (attachments) base.attachments = attachments; if (response.type === 'embeddings') base.embedding_data = response.data;
   return jsonResponse(base, 200, request);
 }
@@ -458,17 +461,22 @@ function streamChatResponse(response, metadata, request, meta, ctx) {
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
   const pump = async () => {
+    let sawToolCalls = false;
     try {
       for await (const chunk of response.stream) {
         const text = chunk.response || chunk.text || chunk.content || '';
-        if (text) {
-          const payload = { id: completionId, object: 'chat.completion.chunk', model: metadata.model_used, task_type: metadata.task_type, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] };
+        const toolCalls = Array.isArray(chunk.tool_calls) ? chunk.tool_calls : null;
+        if (text || toolCalls) {
+          const delta = {};
+          if (text) delta.content = text;
+          if (toolCalls) { delta.tool_calls = toolCalls; sawToolCalls = true; }
+          const payload = { id: completionId, object: 'chat.completion.chunk', model: metadata.model_used, task_type: metadata.task_type, choices: [{ index: 0, delta, finish_reason: null }] };
           if (meta && meta.sessionId) payload.session_id = meta.sessionId;
           if (meta && meta.turnId) payload.turn_id = meta.turnId;
           await writer.write(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
         }
       }
-      const finish = { id: completionId, object: 'chat.completion.chunk', model: metadata.model_used, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] };
+      const finish = { id: completionId, object: 'chat.completion.chunk', model: metadata.model_used, choices: [{ index: 0, delta: {}, finish_reason: sawToolCalls ? 'tool_calls' : 'stop' }] };
       if (meta && meta.sessionId) finish.session_id = meta.sessionId;
       if (meta && meta.turnId) finish.turn_id = meta.turnId;
       await writer.write(encoder.encode(`data: ${JSON.stringify(finish)}\n\n`));

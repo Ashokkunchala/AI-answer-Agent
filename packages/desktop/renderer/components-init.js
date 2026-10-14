@@ -1,6 +1,6 @@
 import {
   AIHeader, SessionTimer, AudioStatus, TranscriptPanel,
-  AIAnswerPanel, ConnectionStatus, ModelInfo, SettingsPanel, ErrorBanner,
+  AIAnswerPanel, ConnectionStatus, ModelInfo, ErrorBanner,
   VADIndicator, ContextStatus, UsageStatus, ModeSelector, InterviewInput
 } from './components/index.js';
 
@@ -34,6 +34,21 @@ class AIAgentTool {
     this._wireIPC();
     this._wireKeyboard();
     console.log('[AI Agent] Tool initialized');
+
+    // Auto-start capturing system output (Teams / Google Meet / Zoom) so the
+    // tool works immediately on launch with no configuration.
+    this._autoStartVoice();
+  }
+
+  async _autoStartVoice() {
+    if (this._micActive) return;
+    try {
+      console.log('[AI Agent] Auto-starting voice capture (system output loopback)');
+      await this._startMic();
+    } catch (e) {
+      console.error('[AI Agent] Auto-start voice failed:', e);
+      this.components.errorBanner?.show('Voice capture failed: ' + (e?.message || e));
+    }
   }
 
   _buildUI() {
@@ -237,16 +252,6 @@ class AIAgentTool {
       console.log('[AI Agent] ErrorBanner mounted');
       this.components.errorBanner = errorBanner;
 
-      // ── SETTINGS SIDEBAR ──
-      console.log('[AI Agent] Creating settings panel');
-      const settings = new SettingsPanel(document.body);
-      console.log('[AI Agent] SettingsPanel created');
-      settings.render();
-      console.log('[AI Agent] SettingsPanel rendered');
-      settings.mount();
-      console.log('[AI Agent] SettingsPanel mounted');
-      this.components.settings = settings;
-
       console.log('[AI Agent] Injecting styles');
       this._injectStyles();
       console.log('[AI Agent] Styles injected');
@@ -295,9 +300,6 @@ class AIAgentTool {
 
   _onHeaderAction(action) {
     switch (action) {
-      case 'settings':
-        this.components.settings?.show();
-        break;
       case 'minimize':
         window.electronAPI?.minimizeToTray?.();
         break;

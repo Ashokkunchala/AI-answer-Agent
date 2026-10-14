@@ -20,7 +20,6 @@ export class AIHeader extends Component {
         <span class="ai-header-status-text">${this.state.status}</span>
       </div>
       <div class="ai-header-actions">
-        <button class="ai-header-btn" data-action="settings" title="Settings">&#9881;</button>
         <button class="ai-header-btn" data-action="minimize" title="Minimize">&#8722;</button>
         <button class="ai-header-btn ai-header-btn-close" data-action="close" title="Hide">&#10005;</button>
       </div>

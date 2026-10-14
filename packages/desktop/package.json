@@ -10,7 +10,6 @@
     "build:dir": "electron-builder --win dir",
     "build:portable": "electron-builder --win portable",
     "test:voice": "node --test --test-reporter=spec \"src/voice/tests/*.test.js\"",
-    "test:jarvis": "node --test --test-reporter=spec src/jarvis/jarvis.test.js",
     "benchmark": "node src/voice/cli-benchmark.js"
   },
   "author": "DevOps AI Agent",

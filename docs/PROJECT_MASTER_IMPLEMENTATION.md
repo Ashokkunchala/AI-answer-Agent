@@ -1,6 +1,6 @@
 # AI-Answer-Agent — Master Implementation
 
-This document is the single checklist for the interview-first AI assistant and the selected JARVIS capabilities.
+This document is the single checklist for the interview-first AI assistant.
 
 ## Product goal
 
@@ -12,14 +12,9 @@ Build an interview-first assistant with realtime voice, grounded answers, resume
 - Streaming STT and streaming answer playback.
 - Wake-word gate.
 - OCR/vision already present.
-- JARVIS command registry with explicit allowlisting.
 - Bounded command history.
 - Local CPU/memory diagnostics.
-- Personality preferences.
-- Opt-in reminders.
-- Opt-in proactive suggestions.
 - TTS interruption/queue behavior remains in the existing voice stack.
-- Risky desktop actions require confirmation.
 
 ## Worker / Cloudflare
 
@@ -52,29 +47,6 @@ Mic -> local VAD -> streaming STT -> stable transcript -> question detection -> 
 
 The desktop remains responsible for continuous audio capture and low-level audio processing. Cloudflare coordinates realtime state and AI/backend operations.
 
-## JARVIS integration policy
-
-Reuse useful JARVIS concepts, not the entire Python runtime.
-
-Included concepts:
-- wake word
-- command registry
-- command history
-- system diagnostics
-- personality
-- reminders
-- opt-in proactive behavior
-- vision/OCR integration points
-- provider fallback concepts through the existing AI router
-
-Explicitly excluded:
-- unrestricted shell execution
-- stealth/anti-detection behavior
-- hidden automation
-- biometric authentication dependency
-- automatic phone/SMS/WhatsApp actions
-- duplicate Python audio/STT runtime
-
 ## Cost policy
 
 Prefer Cloudflare Free-plan resources and graceful degradation. Optional bindings must not make local development or the core interview flow fail when they are not provisioned.
@@ -84,7 +56,6 @@ Prefer Cloudflare Free-plan resources and graceful degradation. Optional binding
 - Worker interview tests
 - Worker retrieval tests
 - Desktop voice tests
-- Desktop JARVIS capability tests
 - Cloudflare preflight
 - End-to-end voice test
 - Real interview simulation

@@ -1,6 +1,7 @@
 import app from './index.js';
 import { InterviewSession } from './durable/interview-session.js';
 import { InterviewAnalysisWorkflow } from './workflows/interview-analysis.js';
+import { AudioEncoder, AgentSession } from './agent-session.js';
 import { handleInterviewQueue } from './queues/interview.js';
 import { handleInterviewAPI } from './interview-api.js';
 import { handleInterviewVoiceSocket } from './voice/interview-socket.js';
@@ -69,4 +70,4 @@ const worker = {
 };
 
 export default worker;
-export { InterviewSession, InterviewAnalysisWorkflow };
+export { InterviewSession, InterviewAnalysisWorkflow, AgentSession, AudioEncoder };

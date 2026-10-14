@@ -39,6 +39,73 @@ function b64ToBytes(b64) {
   return bytes;
 }
 
+// Normalize a single tool call from any provider shape into the OpenAI
+// function-calling shape: { id, type:'function', function:{ name, arguments } }.
+function normalizeToolCall(tc) {
+  if (!tc || typeof tc !== 'object') return null;
+  const fn = tc.function || tc;
+  const name = fn.name || tc.name || '';
+  if (!name) return null;
+  let args = fn.arguments ?? tc.arguments ?? {};
+  const argsString = typeof args === 'string' ? args : JSON.stringify(args ?? {});
+  return {
+    id: tc.id || `call_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
+    type: 'function',
+    function: { name, arguments: argsString },
+  };
+}
+
+// Extract an array of normalized tool calls from any Workers AI / OpenAI
+// response object. Checks every shape we've seen in the wild.
+function extractToolCalls(payload) {
+  if (!payload || typeof payload !== 'object') return [];
+  const candidates = [
+    payload.tool_calls,
+    payload.response?.tool_calls,
+    payload.choices?.[0]?.message?.tool_calls,
+    payload.choices?.[0]?.delta?.tool_calls,
+    payload.message?.tool_calls,
+    payload.result?.tool_calls,
+  ];
+  for (const candidate of candidates) {
+    if (!Array.isArray(candidate) || !candidate.length) continue;
+    const normalized = candidate.map(normalizeToolCall).filter(Boolean);
+    if (normalized.length) return normalized;
+  }
+  return [];
+}
+
+// Pull the assistant text out of any Workers AI response shape.
+function extractText(payload) {
+  if (payload == null) return '';
+  if (typeof payload === 'string') return payload;
+  const candidates = [
+    payload.response,
+    payload.text,
+    payload.content,
+    payload.choices?.[0]?.message?.content,
+    payload.choices?.[0]?.delta?.content,
+    payload.message?.content,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') return candidate;
+    if (Array.isArray(candidate)) {
+      const joined = candidate.map((p) => (p && typeof p.text === 'string' ? p.text : '')).join('');
+      if (joined) return joined;
+    }
+  }
+  return '';
+}
+
+// Preserve OpenAI function-calling fields when forwarding messages to Workers AI.
+function toAIMessage(msg) {
+  const out = { role: msg.role, content: contentToText(msg.content) };
+  if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) out.tool_calls = msg.tool_calls;
+  if (msg.tool_call_id) out.tool_call_id = msg.tool_call_id;
+  if (msg.name) out.name = msg.name;
+  return out;
+}
+
 export async function callCloudflareAI(modelKey, messages, options, env) {
   if (!env.AI) throw new Error('Cloudflare AI binding not available. Enable Workers AI in your Cloudflare dashboard.');
 
@@ -175,7 +242,7 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
   }
 
   // ── Default: text generation (chat) ──
-  const aiMessages = messages.map((msg) => ({ role: msg.role, content: contentToText(msg.content) }));
+  const aiMessages = messages.map(toAIMessage);
 
   const params = {
     messages: aiMessages,
@@ -185,8 +252,16 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
   };
 
   if (options.top_p !== undefined) params.top_p = options.top_p;
+  if (Array.isArray(options.tools) && options.tools.length) {
+    params.tools = options.tools;
+    if (options.tool_choice) params.tool_choice = options.tool_choice;
+  }
 
-  if (options.stream) {
+  // Tool calling is only reliable in buffered (non-stream) mode for Workers AI,
+  // so when tools are supplied we always take the non-stream path.
+  const useStream = options.stream && !params.tools;
+
+  if (useStream) {
     const response = await env.AI.run(modelId, params);
     const reader = response.getReader();
     const textDecoder = new TextDecoder();
@@ -204,25 +279,42 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
             if (!trimmed || !trimmed.startsWith('data: ')) continue;
             const jsonStr = trimmed.slice(6);
             if (jsonStr === '[DONE]') return;
-            try { yield JSON.parse(jsonStr); } catch {}
+            let parsed;
+            try { parsed = JSON.parse(jsonStr); } catch { continue; }
+            const text = extractText(parsed);
+            const toolCalls = extractToolCalls(parsed);
+            if (text || toolCalls.length) {
+              yield { response: text, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
+            }
           }
         }
       },
     };
-    return { type: 'stream', stream: asyncIterable, provider: 'cloudflare', model: modelKey };
+    return { type: 'stream', stream: asyncIterable, provider: 'cloudflare', model: modelKey, modelId };
   }
 
-  const result = await env.AI.run(modelId, params);
+  const rawParams = params.tools ? { ...params, stream: false } : params;
+  const result = await env.AI.run(modelId, rawParams);
 
-  let content = '';
-  let resp = result.response || result;
-
+  let resp = result?.response ?? result;
   if (typeof resp === 'string') {
     try { resp = JSON.parse(resp); } catch {}
   }
 
-  if (resp.choices?.[0]?.message?.content) {
-    content = resp.choices[0].message.content;
+  const toolCalls = extractToolCalls(result);
+  if (!toolCalls.length && resp && resp !== result) {
+    toolCalls.push(...extractToolCalls(resp));
+  }
+
+  let content = '';
+  if (toolCalls.length) {
+    content = extractText(resp) || (typeof resp === 'string' ? resp : '');
+  } else if (resp && typeof resp === 'object' && !Array.isArray(resp)) {
+    if (resp.choices?.[0]?.message?.content || resp.response !== undefined || resp.text !== undefined || resp.content !== undefined) {
+      content = extractText(resp);
+    } else {
+      content = JSON.stringify(resp);
+    }
   } else if (typeof resp === 'string') {
     content = resp;
   } else {
@@ -232,10 +324,11 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
   return {
     type: 'text',
     content,
+    tool_calls: toolCalls,
     provider: 'cloudflare',
     model: modelKey,
     modelId,
-    usage: result.usage || null,
+    usage: result?.usage || null,
   };
 }
 

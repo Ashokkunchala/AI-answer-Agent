@@ -1,0 +1,12 @@
+{
+  "workerUrl": "http://127.0.0.1:8787",
+  "autoStartWorker": true,
+  "model": "gpt-oss-20b",
+  "tools": true,
+  "streaming": true,
+  "autoApprove": true,
+  "maxSteps": 60,
+  "temperature": 0.2,
+  "theme": "auto",
+  "autoSave": true
+}

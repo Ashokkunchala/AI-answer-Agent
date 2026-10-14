@@ -25,6 +25,24 @@ function learnCreditCooldown(modelKey, message) {
 export function httpError(status, message) { const err = new Error(message); err.status = status; return err; }
 function timeoutPromise(ms, promise) { return Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`Request timeout after ${ms}ms`)), ms))]); }
 function getRouteChain(taskType) { return (ROUTING_TABLE[taskType] || ROUTING_TABLE.general).chains; }
+// When the caller supplies tools, prefer models whose config advertises the
+// 'tools' capability. Original ordering is preserved within each partition so
+// fast models still win ties.
+function orderChainForTools(chain, tools) {
+  if (!tools) return chain;
+  const capable = [];
+  const rest = [];
+  for (const route of chain) {
+    const caps = MODELS[route.model]?.caps || [];
+    (caps.includes('tools') ? capable : rest).push(route);
+  }
+  return [...capable, ...rest];
+}
+function withToolFlags(response) {
+  if (!response || typeof response !== 'object') return response;
+  const toolCalls = Array.isArray(response.tool_calls) ? response.tool_calls.filter(Boolean) : [];
+  return toolCalls.length ? { ...response, tool_calls: toolCalls } : { ...response, tool_calls: [] };
+}
 function callProvider(modelKey, messages, options, env) {
   const modelConfig = MODELS[modelKey];
   return modelConfig?.provider === 'gateway' ? callGateway(modelKey, messages, options, env) : callCloudflareAI(modelKey, messages, options, env);
@@ -63,25 +81,28 @@ function enrichResponse(response, body, taskType) {
 export async function routeRequest(body, env) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   if (!messages.length) throw httpError(400, '"messages" must be a non-empty array');
-  const options = { max_tokens: body.max_tokens || 0, temperature: body.temperature ?? 0.7, top_p: body.top_p, stream: body.stream || false, num_steps: body.num_steps, source_lang: body.source_lang, target_lang: body.target_lang };
+  const tools = Array.isArray(body.tools) && body.tools.length ? body.tools : null;
+  const options = { max_tokens: body.max_tokens || 0, temperature: body.temperature ?? 0.7, top_p: body.top_p, stream: body.stream || false, num_steps: body.num_steps, source_lang: body.source_lang, target_lang: body.target_lang, tools: tools || undefined, tool_choice: body.tool_choice };
   let explicitModel = null;
   if (body.model && body.model !== 'auto' && body.model !== 'devops-agent') {
     if (MODELS[body.model]) explicitModel = body.model;
     else throw httpError(400, `Unknown model "${body.model}". GET /v1/models for available models.`);
   }
   const taskType = ROUTING_TABLE[body.task_type] ? body.task_type : classifyRequest(messages);
-  console.log(`[Router] Task: ${taskType} | Model: ${explicitModel || 'auto'}`);
+  console.log(`[Router] Task: ${taskType} | Model: ${explicitModel || 'auto'}${tools ? ` | Tools: ${tools.length}` : ''}`);
   const persistedContext = body.sessionId && env.INTERVIEW_DB ? await getInterviewContext(env, body.sessionId, body.context_limit || 12) : [];
   const context = { resume: body.resume, jobDesc: body.jobDesc, targetName: body.targetName, participants: body.participants };
   const contextMessages = persistedContext.length ? persistedContext.flatMap((turn) => [{ role: 'user', content: `[Previous interview question] ${turn.question}` }, { role: 'assistant', content: `[Previous interview answer] ${turn.answer}` }]) : [];
   const boundedContextMessages = contextMessages.slice(-24);
   const enhancedMessages = body.raw ? messages : injectSystemPrompt([...boundedContextMessages, ...messages], taskType, body.system, context);
-  const cached = await getCachedAIResponse(env, body, taskType);
+  // Never serve a cached answer when the caller has tools in play — responses
+  // and side effects must be fresh.
+  const cached = tools ? null : await getCachedAIResponse(env, body, taskType);
   if (cached?.response) {
     const cachedResponse = enrichResponse(cached.response, body, taskType);
     return { response: cachedResponse, metadata: { task_type: taskType, task_label: ROUTING_TABLE[taskType]?.label || 'General', model_used: cached.response.model_used || explicitModel || 'cached', model_id: cached.response.model_id || null, routing_reason: 'Cloudflare KV cache', latency_ms: 0, all_attempts: [{ status: 'cache-hit' }], cache_hit: true } };
   }
-  const chain = explicitModel ? [{ model: explicitModel, reason: 'explicitly requested' }] : getRouteChain(taskType);
+  const chain = explicitModel ? [{ model: explicitModel, reason: 'explicitly requested' }] : orderChainForTools(getRouteChain(taskType), tools);
   const attempts = [];
   let lastError = null;
   for (const route of chain) {
@@ -97,9 +118,11 @@ export async function routeRequest(body, env) {
       creditCooldowns.delete(modelKey);
       attempts.push({ model: modelKey, modelId: modelConfig.id, status: 'success', latency_ms: elapsed });
       const metadata = { task_type: taskType, task_label: ROUTING_TABLE[taskType]?.label || 'General', model_used: modelKey, model_id: modelConfig.id, routing_reason: route.reason, latency_ms: elapsed, all_attempts: attempts };
-      const enriched = enrichResponse(response, body, taskType);
-      scheduleCacheWrite(env, body, taskType, enriched);
-      scheduleInterviewPersistence(env, body, taskType, enriched, metadata);
+      const enriched = withToolFlags(enrichResponse(response, body, taskType));
+      if (!enriched.tool_calls?.length) {
+        scheduleCacheWrite(env, body, taskType, enriched);
+        scheduleInterviewPersistence(env, body, taskType, enriched, metadata);
+      }
       return { response: enriched, metadata };
     } catch (error) {
       lastError = error; learnCreditCooldown(modelKey, error.message); attempts.push({ model: modelKey, status: 'error', error: error.message }); console.log(`[Router] ${modelKey} failed: ${error.message}`);
@@ -115,8 +138,8 @@ export async function routeRequest(body, env) {
         const elapsed = Date.now() - startTime;
         attempts.push({ model: modelKey, modelId: modelConfig.id, status: 'success', latency_ms: elapsed, fallback: true });
         const metadata = { task_type: taskType, task_label: ROUTING_TABLE[taskType]?.label || 'General', model_used: modelKey, model_id: modelConfig.id, routing_reason: 'safety-net fallback after Workers AI chain failed', latency_ms: elapsed, all_attempts: attempts };
-        const enriched = enrichResponse(response, body, taskType);
-        scheduleCacheWrite(env, body, taskType, enriched); scheduleInterviewPersistence(env, body, taskType, enriched, metadata);
+        const enriched = withToolFlags(enrichResponse(response, body, taskType));
+        if (!enriched.tool_calls?.length) { scheduleCacheWrite(env, body, taskType, enriched); scheduleInterviewPersistence(env, body, taskType, enriched, metadata); }
         return { response: enriched, metadata };
       } catch (error) { lastError = error; attempts.push({ model: modelKey, status: 'error', error: error.message, fallback: true }); console.log(`[Router] fallback ${modelKey} failed: ${error.message}`); }
     }

@@ -1,6 +1,6 @@
 # Voice Service
 
-The voice layer combines the existing AI-answer-Agent audio/STT pipeline with the useful JARVIS assistant behavior.
+The voice layer provides the AI-answer-Agent audio/STT pipeline and assistant session behavior.
 
 ## Responsibilities
 

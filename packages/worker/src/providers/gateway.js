@@ -60,6 +60,10 @@ export async function callGateway(modelKey, messages, options, env) {
     stream: !!options.stream,
   };
   if (options.top_p !== undefined) payload.top_p = options.top_p;
+  if (Array.isArray(options.tools) && options.tools.length) {
+    payload.tools = options.tools;
+    if (options.tool_choice) payload.tool_choice = options.tool_choice;
+  }
 
   // Gateway supports a `cf` metadata object (e.g. for caching policy).
   // If the caller opted in to prompt caching, mirror that request to the gateway.
@@ -119,8 +123,11 @@ export async function callGateway(modelKey, messages, options, env) {
             if (jsonStr === '[DONE]') return;
             try {
               const chunk = JSON.parse(jsonStr);
-              const text = chunk.choices?.[0]?.delta?.content || '';
+              const delta = chunk.choices?.[0]?.delta || {};
+              const text = delta.content || '';
+              const toolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
               if (text) yield { type: 'text', content: text };
+              if (toolCalls.length) yield { type: 'tool_calls', content: '', tool_calls: toolCalls };
             } catch {}
           }
         }
@@ -130,14 +137,17 @@ export async function callGateway(modelKey, messages, options, env) {
   }
 
   const data = await response.json();
-  let content = data.choices?.[0]?.message?.content ?? '';
+  const message = data.choices?.[0]?.message || {};
+  let content = message.content ?? '';
   if (Array.isArray(content)) {
     content = content.map((p) => (p && typeof p.text === 'string' ? p.text : '')).join('');
   }
+  const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
 
   return {
     type: 'text',
     content,
+    tool_calls: toolCalls,
     provider: 'gateway',
     model: modelKey,
     usage: data.usage || null,

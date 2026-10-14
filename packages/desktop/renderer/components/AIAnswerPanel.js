@@ -103,7 +103,11 @@ export class AIAnswerPanel extends Component {
   }
 
   _formatAnswer(text) {
-    return text.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+    // Escape first so model/transcript output can never inject HTML, then apply
+    // the lightweight markdown formatting. Fences/bold/inline-code markers are
+    // unaffected by escaping, so ordering escape-before-format is safe.
+    return this._escapeHtml(text)
+               .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                .replace(/`([^`]+)`/g, '<code class="inline">$1</code>')
                .replace(/\n/g, '<br>');
