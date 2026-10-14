@@ -10,12 +10,13 @@ const { StreamingSTT } = require('./streaming-stt');
 const KEY = process.env.DEEPGRAM_API_KEY;
 
 function synth(apiKey, text) {
+  if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY. Set it before running the EOT sweep.');
   const body = JSON.stringify({ text });
   const qs = 'model=aura-asteria-en&encoding=linear16&sample_rate=16000&container=wav';
   return new Promise((resolve, reject) => {
     const req = https.request(`https://api.deepgram.com/v1/speak?${qs}`, {
       method: 'POST', headers: { Authorization: 'token ' + apiKey, 'Content-Type': 'application/json', Accept: 'audio/wav' },
-    }, (res) => { const c = []; res.on('data', (d) => c.push(d)); res.on('end', () => resolve(Buffer.concat(c))); });
+    }, (res) => { const c = []; res.on('data', (d) => c.push(d)); res.on('end', () => { const out = Buffer.concat(c); if (res.statusCode < 200 || res.statusCode >= 300) return reject(new Error(`Deepgram Speak HTTP ${res.statusCode}: ${out.toString('utf8').slice(0, 300)}`)); if (out.length < 44 || out.toString('ascii', 0, 4) !== 'RIFF') return reject(new Error('Deepgram Speak returned an invalid/empty WAV response')); resolve(out); }); });
     req.on('error', reject); req.write(body); req.end();
   });
 }
@@ -83,6 +84,7 @@ function run(apiKey, pcm, { eotThreshold, eotTimeoutMs, eagerEotThreshold, tailM
 }
 
 async function main() {
+  if (!KEY) throw new Error('Missing DEEPGRAM_API_KEY. Set it in PowerShell with $env:DEEPGRAM_API_KEY="..."');
   const wav = await synth(KEY, 'Explain the difference between Docker and Kubernetes in a DevOps context.');
   const { sampleRate, samples } = decodeWav(wav);
   const pcm = Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength);
