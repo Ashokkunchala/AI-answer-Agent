@@ -82,6 +82,36 @@ npm run build:worker      # deploy (wrangler deploy)
 npx wrangler kv namespace create API_KEYS
 ```
 
+### Troubleshoot `ECONNREFUSED 127.0.0.1:8787`
+
+This error means the CLI is trying to call the local Worker, but no process is listening on port 8787. It is a connection/startup issue, not an AI model response error.
+
+Open **two PowerShell terminals** at the repository root.
+
+**Terminal 1 — start the Worker and leave it running:**
+
+```powershell
+npm install
+npm run dev:worker
+```
+
+Wait for Wrangler to print its local listening URL. By default, it is usually `http://127.0.0.1:8787`.
+
+**Terminal 2 — verify connectivity:**
+
+```powershell
+npm run check:worker
+```
+
+Then retry the CLI command. If Wrangler selected a different port, point the client at that URL, for example:
+
+```powershell
+$env:WORKER_URL = "http://127.0.0.1:8788"
+npm run check:worker
+```
+
+Keep Terminal 1 open while using the local Worker. If you intend to use a deployed Worker instead, configure the client with its HTTPS URL rather than `127.0.0.1`. The check verifies reachability only; it does not verify provider credentials or AI model availability.
+
 ### 3. Run the Desktop app (Electron)
 
 ```bash
