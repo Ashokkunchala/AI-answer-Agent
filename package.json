@@ -11,7 +11,8 @@
     "dev:desktop": "npm run start -w packages/desktop",
     "build:worker": "npm run deploy -w packages/worker",
     "build:desktop": "npm run build -w packages/desktop",
-    "install:all": "npm install"
+    "install:all": "npm install",
+    "check:worker": "node scripts/check-worker.mjs"
   },
   "engines": {
     "node": ">=18.0.0"
