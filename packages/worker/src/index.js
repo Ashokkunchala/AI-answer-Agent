@@ -91,25 +91,46 @@ async function handleTranscription(request, env) {
   }, 200, request);
 }
 
-// Auth middleware — returns null if allowed, or a Response if denied.
-// Direct-use mode: requests WITHOUT an API key run as the shared anonymous identity.
-// Rate limiting is disabled (unlimited requests).
+// Authentication is deny-by-default. Anonymous usage is allowed only when
+// explicitly enabled for local development; never enable it on a public deployment.
+function constantTimeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function isAdmin(request) {
+  return request._keyData?.role === 'admin';
+}
+
+function adminRequired(request) {
+  return isAdmin(request)
+    ? null
+    : jsonResponse({ error: 'Administrator authentication required' }, 403, request);
+}
+
 async function authenticate(request, env, path) {
   if (PUBLIC_PATHS.includes(path)) return null;
 
   const apiKey = extractApiKey(request);
-
   if (!apiKey) {
-    request._keyData = { id: 'anon', name: 'anonymous', tier: 'anonymous' };
+    if (env.ALLOW_ANONYMOUS === 'true' && env.ENVIRONMENT !== 'production') {
+      request._keyData = { id: 'anon', name: 'anonymous', tier: 'anonymous' };
+      return null;
+    }
+    return jsonResponse({ error: 'Authentication required. Send Authorization: Bearer <API_KEY>.' }, 401, request);
+  }
+
+  // The admin token is a Cloudflare secret (ADMIN_API_TOKEN), never a checked-in var.
+  if (env.ADMIN_API_TOKEN && constantTimeEqual(apiKey, env.ADMIN_API_TOKEN)) {
+    request._keyData = { id: 'admin', name: 'administrator', tier: 'admin', role: 'admin' };
     return null;
   }
 
   const keyData = await validateApiKey(apiKey, env);
-  if (!keyData) {
-    return jsonResponse({ error: 'Invalid or revoked API key' }, 403, request);
-  }
+  if (!keyData) return jsonResponse({ error: 'Invalid or revoked API key' }, 403, request);
 
-  // Attach key data for downstream handlers
   request._keyData = keyData;
   return null;
 }
@@ -239,11 +260,9 @@ export default {
       }
 
       // ── Auth check ──
-      // Allow WebSocket upgrade to /voice-socket without authentication (same as other public paths)
-      if (!(path === '/voice-socket' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket')) {
-        const authDenied = await authenticate(request, env, path);
-        if (authDenied) return authDenied;
-      }
+      // WebSocket upgrades are authenticated exactly like HTTP API requests.
+      const authDenied = await authenticate(request, env, path);
+      if (authDenied) return authDenied;
       // ─── Health (public) ───
       if (path === '/' || path === '/health') {
         const modelCount = Object.keys(MODELS).length;
@@ -266,7 +285,7 @@ export default {
             'GET /v1/models': `List all ${modelCount} models (public)`,
             'GET /v1/tasks': 'List task types (public)',
             'POST /v1/route': 'Preview routing (auth required)',
-            'POST /v1/keys': 'Create API key (no auth — for external tools)',
+            'POST /v1/keys': 'Create API key (administrator only)',
             'GET /v1/keys': 'List keys',
             'POST /v1/keys/revoke': 'Revoke a key by id',
             'DELETE /v1/keys': 'Delete a key by id',
@@ -309,8 +328,10 @@ export default {
         });
       }
 
-      // ─── Create API key (no auth needed — keys are for external tools) ───
+      // API-key administration is restricted to the ADMIN_API_TOKEN.
       if (path === '/v1/keys' && request.method === 'POST') {
+        const denied = adminRequired(request);
+        if (denied) return denied;
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
 
@@ -332,20 +353,18 @@ export default {
         });
       }
 
-      // List API keys (requires auth)
+      // List all API keys: administrator only.
       if (path === '/v1/keys' && request.method === 'GET') {
-        if (!request._keyData || request._keyData.id === 'anon') {
-          return jsonResponse({ error: 'Authentication required to list keys' }, 401, request);
-        }
+        const denied = adminRequired(request);
+        if (denied) return denied;
         const keys = await listApiKeys(env);
         return jsonResponse({ keys });
       }
 
-      // Revoke API key (requires auth)
+      // Revoke API key: administrator only.
       if (path === '/v1/keys/revoke' && request.method === 'POST') {
-        if (!request._keyData || request._keyData.id === 'anon') {
-          return jsonResponse({ error: 'Authentication required to revoke keys' }, 401, request);
-        }
+        const denied = adminRequired(request);
+        if (denied) return denied;
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
 
@@ -353,11 +372,10 @@ export default {
         return jsonResponse(result, result.success ? 200 : 404, request);
       }
 
-      // Delete API key (requires auth)
+      // Delete API key: administrator only.
       if (path === '/v1/keys' && request.method === 'DELETE') {
-        if (!request._keyData || request._keyData.id === 'anon') {
-          return jsonResponse({ error: 'Authentication required to delete keys' }, 401, request);
-        }
+        const denied = adminRequired(request);
+        if (denied) return denied;
         const body = await readBody(request);
         if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400, request);
 
