@@ -164,7 +164,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0}
     <div class="topbar">
       <h2 id="viewTitle">Chat</h2>
       <span class="badge badge-offline" id="statusBadge">Checking...</span>
-      <span class="badge badge-cyan">Direct mode &mdash; no key needed</span>
+      <span class="badge badge-cyan">Admin token required for protected actions</span>
       <div style="flex:1"></div>
       <span style="font-size:.75em;color:var(--text2)">API keys are for external tools &rarr; API Keys tab</span>
     </div>
@@ -361,9 +361,21 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// Direct mode: no API key needed — requests run under the anonymous identity
+// Keep the administrator token only for this browser tab; never persist it to localStorage.
+function getAdminToken() {
+  var token = sessionStorage.getItem('aiAnswerAgentAdminToken');
+  if (!token) {
+    token = window.prompt('Enter your Cloudflare ADMIN_API_TOKEN. This is required for protected dashboard actions.');
+    if (!token) throw new Error('Administrator token required.');
+    token = token.trim();
+    if (!token) throw new Error('Administrator token required.');
+    sessionStorage.setItem('aiAnswerAgentAdminToken', token);
+  }
+  return token;
+}
+
 async function api(method, path, body) {
-  var opts = { method: method, headers: { 'Content-Type': 'application/json' } };
+  var opts = { method: method, headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getAdminToken() } };
   if (body) opts.body = JSON.stringify(body);
   var res = await fetch(BASE + path, opts);
   var data = await res.json();
@@ -454,7 +466,7 @@ async function sendChat() {
     if (stream) {
       var res = await fetch(BASE + '/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getAdminToken() },
         body: JSON.stringify(body),
       });
 
