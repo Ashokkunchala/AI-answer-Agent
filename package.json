@@ -19,7 +19,8 @@
     "test:interview": "node --test packages/worker/src/interview/*.test.js",
     "preflight:cloudflare": "node scripts/cloudflare/preflight.mjs",
     "install:all": "npm install",
-    "check:worker": "node scripts/check-worker.mjs"
+    "check:worker": "node scripts/check-worker.mjs",
+    "test:security": "node --test packages/worker/src/security.test.js"
   },
   "engines": {
     "node": ">=18.0.0"
