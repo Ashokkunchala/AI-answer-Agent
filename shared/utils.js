@@ -1,4 +1,4 @@
-// Shared utility functions used by both worker and desktop packages
+// Shared utility functions used by the worker packages
 
 /**
  * Concatenate an array of ArrayBuffer/Uint8Array chunks into a single ArrayBuffer.

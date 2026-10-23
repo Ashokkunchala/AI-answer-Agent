@@ -93,11 +93,70 @@ Record:
 
 Keep the live answer path free of D1/R2/Workflow work unless absolutely necessary. Cloudflare's storage guidance recommends Durable Objects for real-time coordination, D1 for relational data, R2 for object data, KV for high-read key/value data, and Queues for background work. citeturn0search0turn0search1
 
-## 9. Free-first guardrails
+## 9. Pay-as-you-go configuration (current decision)
 
-Current Cloudflare documentation lists Workers Free limits for D1, SQLite-backed Durable Objects and Workflows. For example, the current Free plan lists 5 million D1 rows read/day, 100,000 D1 rows written/day, and 3,000 Workflow steps/day. Limits can change, so verify the account's current dashboard before production traffic. citeturn0search4
+This deployment is **not** free-first: it runs pay-as-you-go on the Workers Paid plan with **no application-level cost or bill limits**.
 
-Do not enable paid/unified AI Gateway billing just to make the architecture work. Add paid providers deliberately and measure the value first.
+### 9.1 Cloudflare usage model
+
+Workers Paid's current usage model is named **Standard**. The legacy names were `bundled` (old Standard) and `unbound` (old pay-per-request); there is no `pay-per-request` value today and the API rejects it:
+
+```
+Invalid usage model. Please provide a valid usage model: 'standard'.
+```
+
+Account `808e003dfdde0e801aac9c88aa7c9b84` is already correct:
+
+```bash
+curl "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/account-settings" \
+  -H "Authorization: Bearer $TOKEN"
+# { "default_usage_model": "standard", "green_compute": false }
+
+curl "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/devops-ai-agent/settings" \
+  -H "Authorization: Bearer $TOKEN"
+# { "usage_model": "standard", ... }
+```
+
+To change it: dashboard (Workers & Pages > account > Usage Model > Change) or `PUT /accounts/{id}/workers/account-settings` with a token holding **Account Settings Write**. Wrangler OAuth tokens do not carry that permission, and `PATCH` on script settings is not available to them.
+
+### 9.2 Application-level limits (all disabled)
+
+| Setting | Value | Meaning |
+| --- | --- | --- |
+| `BUDGET_MONTHLY_USD` | `0` | No router spend cap; `saver` and `blocked` modes are unreachable. |
+| `MAX_OUTPUT_TOKENS` | `0` | No per-request output cap; each call may use the model's own `max_tokens`. |
+| `NEURON_FREE_DAILY` | `10000` | Daily free Workers AI allowance, still spent first. |
+| Rate limiting | disabled | Unlimited requests for keys and anonymous use. |
+
+Cloudflare account billing and payment methods still apply independently of this worker.
+
+### 9.3 AI Gateway partner models
+
+Models reached through AI Gateway (for example `google/gemini-3.1-flash-lite`, `gpt-5.6-sol`) fail with:
+
+```
+2021: Insufficient AI Gateway credits
+```
+
+They need prepaid credits or unified billing on the Gateway (`AI_GATEWAY_ID = "default"`). Enable it in the dashboard (AI Gateway > Settings > Unified billing) or with an API token holding **Account AI Gateway Write**. Direct Workers AI models (`llama-3.3-70b`, `llama-3.1-8b`, the free pool) bill per neuron on the account's Standard usage model and work without Gateway credits.
+
+Until credits are loaded, partner models still work as a request: the router catches the gateway billing error and degrades to the cheapest capable direct Workers AI model, reporting `routing.reason = "direct Workers AI fallback (AI Gateway unified billing unavailable)"`.
+
+### 9.4 Verifying a deploy
+
+```bash
+npm run preflight:cloudflare
+npx wrangler deploy --cwd packages/worker
+curl https://devops-ai-agent.ashokkunchla.workers.dev/health
+curl https://devops-ai-agent.ashokkunchla.workers.dev/v1/status
+```
+
+`/health` and `/v1/status` must report `unlimited_budget: true`, `max_output_tokens: 0` and the full model count. Wrangler deploys do not delete secrets, but confirm `DASHBOARD_ADMIN_KEY` is still present afterwards:
+
+```bash
+curl "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/workers/scripts/devops-ai-agent/secrets" \
+  -H "Authorization: Bearer $TOKEN"
+```
 
 ## 10. Public exposure
 
@@ -105,7 +164,7 @@ Before making the service public:
 
 - Put authentication in front of sensitive endpoints.
 - Keep rate limiting enabled.
-- Restrict CORS to the desktop/app origin when possible.
+- Restrict CORS to approved application origins.
 - Add Cloudflare WAF/Turnstile where appropriate.
 - Rotate provider secrets regularly.
 - Monitor Worker logs and error rates.

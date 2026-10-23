@@ -60,8 +60,8 @@ function looksLikeBase64(value) {
 }
 
 // Extract + validate the raw audio bytes from an already-parsed JSON body.
-// Supported shapes (OpenAI-compatible and the desktop client's legacy format):
-//   { file: "<base64>" }            (desktop client)
+// Supported shapes (OpenAI-compatible and the app client's legacy format):
+//   { file: "<base64>" }            (app client)
 //   { file: { ... } }               (some SDKs wrap the file object)
 //   { audio: "<base64>" }           (OpenAI alt key)
 //   { messages: [{ audio: ... }] }  (chat-completions style wrapper)

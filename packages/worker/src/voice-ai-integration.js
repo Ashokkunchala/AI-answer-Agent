@@ -1,6 +1,6 @@
 /**
  * Voice -> AI integration contract.
- * Keeps voice transport separate from model/provider details. The desktop
+ * Keeps voice transport separate from model/provider details. The client
  * client sends normalized transcript + context; the Worker decides whether
  * the request is an answer, action, research task, or another agent mode.
  */

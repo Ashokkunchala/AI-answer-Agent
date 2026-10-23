@@ -1,7 +1,7 @@
 /*
  * Voice interview pipeline primitives.
  *
- * The desktop client remains responsible for microphone capture, local DSP,
+ * The connected client is responsible for microphone capture, local DSP,
  * echo cancellation and VAD. This module keeps the Worker side stateless and
  * incremental: accept partial transcripts, detect stable text, and only send
  * stable questions to the AI router.

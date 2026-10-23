@@ -1,6 +1,6 @@
 # AI-Answer-Agent
 
-A practical AI assistant foundation with a Cloudflare Worker API, task-aware model routing, a Windows Electron voice/interview client, and DevOps-agent tooling. The long-term goal is a JARVIS-like assistant that can explain, plan, use tools, verify results and safely execute approved tasks.
+A practical AI assistant foundation with a Cloudflare Worker API, task-aware model routing, and DevOps-agent tooling. The long-term goal is a JARVIS-like assistant that can explain, plan, use tools, verify results and safely execute approved tasks.
 
 **Reality check:** this repository is a work in progress, not a finished autonomous assistant. The project should be advanced in small testable stages. This branch hardens request authentication and documents the path from setup to safe DevOps automation. No cloud deployment is performed by these changes.
 
@@ -20,14 +20,13 @@ A practical AI assistant foundation with a Cloudflare Worker API, task-aware mod
 |---|---|---|
 | Cloudflare Worker | HTTP API, chat, transcription and realtime answer endpoints | Cloudflare bindings/provider setup may be required |
 | Model router | Classifies tasks and chooses configured models/fallbacks | Availability and cost depend on provider/account |
-| Electron desktop client | Windows-oriented overlay and voice/interview UI | Validate on real Windows audio hardware |
-| Voice pipeline | Audio capture, VAD, transcript/turn management | Each stage must be tested independently |
+| Voice pipeline | Transcription, realtime answers and turn management | Each stage must be tested independently |
 | Agent package/CLI | Developer-facing agent commands | Use read-only operations first |
 | Security regression tests | Verify key authentication and authorization boundaries | Run locally and in CI |
 
 ## Local development
 
-Requirements: Git, npm, and Node.js 20 LTS recommended (the project declares Node.js 18+). Windows is required to validate Windows-specific audio capture.
+Requirements: Git, npm, and Node.js 20 LTS recommended (the project declares Node.js 18+).
 
 ```powershell
 git clone https://github.com/Ashokkunchala/AI-answer-Agent.git
@@ -44,12 +43,6 @@ npm run check:worker
 npm run test:security
 ```
 
-To start the Electron client after Worker startup:
-
-```powershell
-npm run dev:desktop
-```
-
 The commands above start local development; they do not deploy to Cloudflare. Some provider and persistence features require local bindings or account configuration.
 
 ## Useful commands
@@ -62,7 +55,6 @@ The commands above start local development; they do not deploy to Cloudflare. So
 | `npm run test:security` | Test authentication and authorization |
 | `npm run test:interview` | Run interview-pipeline tests |
 | `npm run test:agent` | Run agent package tests |
-| `npm run dev:desktop` | Start the Electron client |
 | `npm run preflight:cloudflare` | Check Cloudflare setup prerequisites |
 
 ## Security model

@@ -4,17 +4,7 @@ This document is the single checklist for the interview-first AI assistant.
 
 ## Product goal
 
-Build an interview-first assistant with realtime voice, grounded answers, resume/JD/project memory, interview coaching, and optional desktop-assistant capabilities.
-
-## Desktop
-
-- Low-latency microphone capture/VAD/turn management.
-- Streaming STT and streaming answer playback.
-- Wake-word gate.
-- OCR/vision already present.
-- Bounded command history.
-- Local CPU/memory diagnostics.
-- TTS interruption/queue behavior remains in the existing voice stack.
+Build an interview-first assistant with realtime voice, grounded answers, resume/JD/project memory, interview coaching, and optional coding-assistant capabilities.
 
 ## Worker / Cloudflare
 
@@ -45,7 +35,7 @@ Build an interview-first assistant with realtime voice, grounded answers, resume
 
 Mic -> local VAD -> streaming STT -> stable transcript -> question detection -> grounded retrieval -> AI answer -> streaming UI/TTS.
 
-The desktop remains responsible for continuous audio capture and low-level audio processing. Cloudflare coordinates realtime state and AI/backend operations.
+Connected clients handle audio capture and preprocessing. Cloudflare coordinates realtime state and AI/backend operations.
 
 ## Cost policy
 
@@ -55,7 +45,6 @@ Prefer Cloudflare Free-plan resources and graceful degradation. Optional binding
 
 - Worker interview tests
 - Worker retrieval tests
-- Desktop voice tests
 - Cloudflare preflight
 - End-to-end voice test
 - Real interview simulation

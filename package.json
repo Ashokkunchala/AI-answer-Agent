@@ -2,20 +2,22 @@
   "name": "devops-ai-agent-suite",
   "version": "4.0.0",
   "private": true,
-  "description": "DevOps AI Agent - Cloudflare Worker backend + Electron desktop client",
+  "description": "DevOps AI Agent - Cloudflare Worker backend and coding assistant",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
     "dev:worker": "npm run dev -w packages/worker",
-    "dev:desktop": "npm run start -w packages/desktop",
     "dev:agent": "node packages/agent/bin/agent.js",
+    "agent-terminal": "node packages/agent/bin/agent.js",
     "agent": "node packages/agent/bin/agent.js",
     "workercli": "node packages/agent/bin/workercli.js",
+    "aether": "node \"packages/AETHER AI/src/cli.js\"",
+    "link:aether": "npm link -w @aether-ai/assistant",
     "test:agent": "npm test -w packages/agent",
     "link:agent": "npm link -w packages/agent",
+    "install:agent:global": "npm link -w packages/agent",
     "build:worker": "npm run deploy -w packages/worker",
-    "build:desktop": "npm run build -w packages/desktop",
     "test:interview": "node --test packages/worker/src/interview/*.test.js",
     "preflight:cloudflare": "node scripts/cloudflare/preflight.mjs",
     "install:all": "npm install",
@@ -26,11 +28,12 @@
     "node": ">=18.0.0"
   },
   "allowScripts": {
-    "electron@34.5.8": true,
     "tesseract.js@5.1.1": true,
     "esbuild@0.17.19": true,
+    "esbuild@0.28.2": true,
     "sharp@0.33.5": true,
     "workerd@1.20250718.0": true,
+    "workerd@1.20261019.1": true,
     "koffi@3.3.0": true
   }
 }

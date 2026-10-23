@@ -1,12 +1,12 @@
 # Cloudflare Free-First Stack
 
-AI-Answer-Agent uses Cloudflare as the low-cost control plane while keeping the desktop voice pipeline responsible for microphone/audio capture, DSP/VAD and STT.
+AI-Answer-Agent uses Cloudflare as the low-cost control plane for interview session coordination, transcription, and AI responses.
 
 ## End-to-end interview path
 
 ```text
-Microphone / WASAPI
-   -> Desktop DSP + VAD
+Interview client
+   -> Client transcription
    -> Streaming STT
    -> /api/answer
    -> persisted session context
@@ -87,7 +87,6 @@ npx wrangler deploy
 
 - Keep the Free-first architecture as the default.
 - Do not enable AI Gateway Unified Billing when targeting a $0 Cloudflare architecture.
-- Keep raw audio processing on the desktop.
 - Use Workers AI for lightweight routing/classification where appropriate.
 - Keep background analysis in Workflow/Queue rather than the live answer path.
 - Never commit API tokens or other secrets.

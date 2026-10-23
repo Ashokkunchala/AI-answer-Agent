@@ -1,19 +1,20 @@
-# @devops-ai/agent — `workercli`
+# @devops-ai/agent — `agent`
 
-Local, opencode-style terminal agent for the DevOps AI Agent Suite. It runs an
-**agentic tool loop** in your terminal and talks to a local (or remote)
-Cloudflare Worker as its model backend.
+Standalone terminal coding agent with its own full-screen interface, local tool
+loop, sessions, permissions, checkpoints, subagents and skill system. It uses
+your Cloudflare Worker or Google Gemini API URL and API key. The terminal UI is the agent's own workbench;
+Claude Code and OpenCode are product references, not required runtimes.
 
 ```text
-you ──▶ workercli (tool loop) ──▶ POST /v1/chat/completions ──▶ Worker ──▶ Workers AI
+you ──▶ agent terminal (tool loop) ──▶ your Cloudflare Worker (API key)
               ▲                                                             │
               └────────────── tool_calls / content ◀──────────────────────┘
 ```
 
 ## The interface
 
-Just run `agent` (or `workercli`) in a terminal and you get an opencode-style
-full-screen terminal UI:
+Run `agent` (or the legacy `workercli` alias) from any project directory to
+open the Agent Terminal full-screen interface:
 
 ```text
 › summarize this repo and list the packages
@@ -46,9 +47,10 @@ If stdin/stdout is not a TTY (e.g. piped), it falls back to a plain line REPL.
   - `task` — spawn a sub-agent for a self-contained multi-step job
 - **Streaming** — tokens stream to the terminal when tools are disabled.
 - **Project context** — reads `AGENTS.md`, `.agent/AGENTS.md` or `CLAUDE.md` if present.
+- **Skills** — discovers project skills in `.agent/skills`, `.agents/skills`, `.claude/skills` and `.codex/skills`; also loads user skills from standard Agents, Codex, Claude and agent-config directories, including installed Codex plugin skills.
 - **Project analysis preflight** — whole-project requests receive a bounded source inventory before the model investigates manifests and entry points.
 - **Sessions** — persistent in-memory conversation with `/clear` to reset.
-- **Worker passthrough** — `/health`, `/v1/models`, interview session/report endpoints.
+- **Optional Worker tools** — `/health`, `/v1/models`, usage, routing, API-key and interview session/report endpoints.
 
 ## Workbench controls
 
@@ -57,10 +59,10 @@ The terminal UI is designed for longer coding tasks instead of one-shot chat:
 - A **Work plan** panel shows live `todowrite` progress and the current agent step.
 - Tool results are compact by default; press **Tab** to expand or collapse their output.
 - Press **Ctrl+P** to show or hide the work plan, **Ctrl+L** to clear the visible transcript, and **Esc** to cancel an active task.
-- When automatic approval is disabled, the UI stops at each write, edit, or shell command: **Y** allows it once, **A** allows that tool for the current task, and **N** denies it.
+- By default, the agent carries out workspace edits and CLI commands without stopping for approval. Use `/permissions ask` to review changes before they run, or `/permissions deny` to block mutations.
 - Use natural language for substantial jobs, for example: `Review the worker routing, fix the fallback bug, and run the tests.` The agent plans, investigates, edits, and checks its work in one task.
 
-## Local setup (worker + cli)
+## Install and launch
 
 1. Install dependencies from the repo root:
 
@@ -68,54 +70,53 @@ The terminal UI is designed for longer coding tasks instead of one-shot chat:
    npm install
    ```
 
-2. Run the Worker locally with `wrangler dev` (needs a Cloudflare account with
-   Workers AI enabled, for the `AI` binding):
+2. Set your Worker API key. The interactive terminal prompts for it when it is
+   missing and stores it in your user config, or set it in the environment:
 
    ```bash
-   npm run dev:worker          # from repo root
-   # or: cd packages/worker && npx wrangler dev   (defaults to http://127.0.0.1:8787)
+   # PowerShell
+   $env:WORKER_API_KEY = "your-worker-key"
+   agent setup --worker https://your-worker.example.workers.dev --model auto
+   agent doctor
    ```
 
-3. Link the CLI so you can launch it by typing `agent` from anywhere:
+For Gemini, keep the key in the shell environment and select the provider:
 
-   ```bash
-   npm run link:agent          # from repo root (= npm link -w packages/agent)
-   # or: cd packages/agent && npm link
-   ```
-
-4. Launch it:
-
-   ```bash
-   agent                       # full-screen terminal UI (opencode-style)
-   agent run "summarize the packages/"
-   ```
-
-   Without linking, run it via the paths below.
-
-### Fast project setup
-
-From the repository root, the following gives a new project a complete local
-terminal-agent setup. It creates `.agent/config.json` in the current project
-and checks the backend before you begin:
-
-```bash
-npm run dev:worker             # separate terminal; starts the local Worker
-npm run link:agent             # once, makes `agent` available on PATH
-agent setup --worker http://127.0.0.1:8787 --model auto
+```powershell
+$env:GEMINI_API_KEY = "your-gemini-key"
+agent setup --provider gemini --model gemini-3.8-flash --global
 agent doctor
-agent                          # opens the full-screen UI
 ```
 
-For a deployed Worker, replace the local URL and optionally provide its API
-key:
+The default Gemini URL is `https://generativelanguage.googleapis.com/v1beta/openai`.
+Override it with `--gemini-url` when needed. `GEMINI_API_KEY` is read at runtime
+and is not written to the agent config by this setup flow.
+
+3. Link the CLI globally so it can be launched from any project directory:
+
+   ```bash
+   npm run install:agent:global
+   ```
+
+4. Open the standalone full-screen terminal with `agent` or `agent-terminal` from any project folder.
+
+### Worker connection
 
 ```bash
-agent setup --worker https://your-worker.example.workers.dev --api-key dvops_... --model auto
+npm run dev:worker
+agent setup --worker http://127.0.0.1:8787 --model auto
+agent doctor
+agent
+```
+
+For a deployed Worker, provide its URL and API key:
+
+```bash
+agent setup --worker https://your-worker.example.workers.dev --api-key your-worker-key --model auto
 ```
 
 `agent doctor` validates Node, the terminal, the active workspace config,
-Worker health, and model discovery. It is the quickest way to diagnose a
-terminal setup that cannot answer requests.
+provider health, and model discovery.
 
 ## Configure
 
@@ -123,10 +124,11 @@ The CLI reads config from (first match wins):
 
 1. `<cwd>/.agent/config.json`
 2. `<cwd>/.workercli/config.json`
-3. `packages/agent/.agent/config.json` (shipped default)
-4. `~/.config/workercli/config.json`, `~/.workercli/config.json`, and the legacy `devops-agent` paths
+3. `~/.config/agent-terminal/config.json` or `~/.agent-terminal/config.json`
+4. `packages/agent/.agent/config.json` (shipped default)
+5. Legacy `workercli` and `devops-agent` config paths
 
-The shipped default already points at the local worker:
+The legacy default profile selects the optional Worker backend:
 
 ```json
 {
@@ -139,7 +141,10 @@ The shipped default already points at the local worker:
 }
 ```
 
-Override and save:
+Global settings are saved under `~/.config/agent-terminal/config.json`; project settings stay
+in `.agent/config.json`.
+
+Override Worker settings and save:
 
 ```bash
 node packages/agent/bin/workercli.js config --set workerUrl=http://127.0.0.1:8787 --save
@@ -170,6 +175,11 @@ node packages/agent/bin/workercli.js doctor
 - `/session`, `/context <id>`, `/finalize <id>`, `/report <id>`
 - `/exit`
 
+Skills are loaded from project roots first, then user-level roots. Add custom
+directories with the `skillDirs` config array. The agent lists skill summaries
+in its system context and loads full instructions on demand with the `skill`
+tool.
+
 ## How tool calling works
 
 The CLI sends OpenAI-style `tools` to `POST /v1/chat/completions` with
@@ -178,7 +188,6 @@ Worker forwards `tools` to Workers AI and returns `tool_calls`. Because Workers
 AI only returns reliable tool calls when buffered, the agent uses non-streaming
 requests while tools are enabled, then streams the final answer in chat mode.
 
-## Not for interview/voice
+## Interview and voice features
 
-This package is the developer-facing coding agent. The Electron desktop app
-(`packages/desktop`) remains the interview/meeting overlay.
+Interview and voice features are handled by the Worker and its connected clients.
