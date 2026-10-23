@@ -2,16 +2,17 @@
   "name": "@devops-ai/agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Local CLI terminal agent for DevOps AI Agent Suite",
+  "description": "Standalone full-screen coding agent terminal connected to your Cloudflare Worker",
   "type": "module",
   "bin": {
     "agent": "./bin/agent.js",
+    "agent-terminal": "./bin/agent.js",
     "workercli": "./bin/workercli.js"
   },
   "main": "src/cli.js",
   "scripts": {
-    "start": "node bin/workercli.js",
-    "dev": "node --watch bin/workercli.js",
+    "start": "node bin/agent.js",
+    "dev": "node --watch bin/agent.js",
     "test": "node --test"
   },
   "dependencies": {

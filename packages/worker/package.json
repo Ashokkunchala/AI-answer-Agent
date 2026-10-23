@@ -9,9 +9,15 @@
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "provision:free": "bash ../../scripts/cloudflare/provision-free-stack.sh",
-    "test:interview": "node --test src/interview/*.test.js"
+    "test:interview": "node --test src/interview/*.test.js",
+    "test:budget": "node --test src/platform/*.test.js",
+    "test": "node --test src/**/*.test.js",
+    "monitor": "node src/monitor.js",
+    "monitor:tui": "node src/monitor.js --tui",
+    "monitor:once": "node src/monitor.js --once",
+    "monitor:webhook": "node src/monitor.js --webhook"
   },
   "devDependencies": {
-    "wrangler": "^3.114.0"
+    "wrangler": "^4.151.3"
   }
 }

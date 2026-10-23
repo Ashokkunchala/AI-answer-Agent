@@ -4,6 +4,13 @@
 import { MODELS } from '../config.js';
 import { contentToText } from '../utils.js';
 
+function runAI(env, modelId, input, options = {}) {
+  const gatewayId = options.gatewayId;
+  return gatewayId
+    ? env.AI.run(modelId, input, { gateway: { id: gatewayId } })
+    : env.AI.run(modelId, input);
+}
+
 function lastMessage(messages) {
   return messages.filter((m) => m.role === 'user').pop() || null;
 }
@@ -88,11 +95,23 @@ function extractText(payload) {
     payload.message?.content,
   ];
   for (const candidate of candidates) {
-    if (typeof candidate === 'string') return candidate;
+    if (typeof candidate === 'string' && candidate) return candidate;
     if (Array.isArray(candidate)) {
       const joined = candidate.map((p) => (p && typeof p.text === 'string' ? p.text : '')).join('');
       if (joined) return joined;
     }
+  }
+  // Reasoning-only responses (content empty) — surface the thinking text rather
+  // than an empty answer.
+  const reasoning = [
+    payload.choices?.[0]?.message?.reasoning_content,
+    payload.choices?.[0]?.delta?.reasoning_content,
+    payload.reasoning_content,
+    payload.reasoning,
+    payload.message?.reasoning_content,
+  ];
+  for (const candidate of reasoning) {
+    if (typeof candidate === 'string' && candidate) return candidate;
   }
   return '';
 }
@@ -106,10 +125,10 @@ function toAIMessage(msg) {
   return out;
 }
 
-export async function callCloudflareAI(modelKey, messages, options, env) {
+export async function callCloudflareAI(modelKey, messages, options, env, modelConfigOverride = null) {
   if (!env.AI) throw new Error('Cloudflare AI binding not available. Enable Workers AI in your Cloudflare dashboard.');
 
-  const modelConfig = MODELS[modelKey];
+  const modelConfig = modelConfigOverride || MODELS[modelKey];
   if (!modelConfig) throw new Error(`Unknown model: ${modelKey}`);
 
   const modelId = modelConfig.id;
@@ -135,11 +154,11 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
 
     let result;
     try {
-      result = await env.AI.run(modelId, params);
+      result = await runAI(env, modelId, params, options);
     } catch (e) {
       // Schema mismatch — retry with minimal params
       if (/not allowed|unevaluated|required propert/i.test(e.message)) {
-        result = await env.AI.run(modelId, { prompt });
+        result = await runAI(env, modelId, { prompt }, options);
       } else throw e;
     }
 
@@ -161,7 +180,7 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
     const audio = msg?.audio;
     if (!audio) throw new Error('Audio data required for transcription models (set "audio" on the user message)');
     const audioInput = typeof audio === 'string' ? b64ToBytes(audio) : audio;
-    const result = await env.AI.run(modelId, { audio: audioInput });
+    const result = await runAI(env, modelId, { audio: audioInput }, options);
     const text = typeof result === 'string' ? result : (result.text || JSON.stringify(result));
     return { type: 'audio', content: text, provider: 'cloudflare', model: modelKey };
   }
@@ -173,7 +192,7 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
       .map((m) => contentToText(m.content))
       .filter(Boolean);
     if (!texts.length) throw new Error('Text required for embedding models');
-    const result = await env.AI.run(modelId, { text: texts });
+    const result = await runAI(env, modelId, { text: texts }, options);
     return {
       type: 'embeddings',
       content: `[Embeddings: ${texts.length} input(s)]`,
@@ -188,7 +207,7 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
   if (caps.includes('classification')) {
     const text = lastUserText(messages);
     if (!text) throw new Error('Text required for classification models');
-    const result = await env.AI.run(modelId, { text });
+    const result = await runAI(env, modelId, { text }, options);
     return {
       type: 'classification',
       content: JSON.stringify(result),
@@ -202,11 +221,11 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
   if (caps.includes('translation')) {
     const text = lastUserText(messages);
     if (!text) throw new Error('Text required for translation models');
-    const result = await env.AI.run(modelId, {
+    const result = await runAI(env, modelId, {
       text,
       source_lang: options.source_lang || 'en',
       target_lang: options.target_lang || 'es',
-    });
+    }, options);
     const translated = typeof result === 'string' ? result : (result.translated_text || result.translation || JSON.stringify(result));
     return { type: 'translation', content: translated, provider: 'cloudflare', model: modelKey };
   }
@@ -220,13 +239,13 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
     const payload = /melotts/i.test(modelId) ? { prompt: text } : { text };
     let result;
     try {
-      result = await env.AI.run(modelId, payload);
+      result = await runAI(env, modelId, payload, options);
     } catch (e) {
       // Schema mismatch — retry with the alternate key name
       if (/required propert/i.test(e.message) && !payload.prompt) {
-        result = await env.AI.run(modelId, { prompt: text });
+        result = await runAI(env, modelId, { prompt: text }, options);
       } else if (/not allowed|unevaluated/i.test(e.message) && payload.prompt) {
-        result = await env.AI.run(modelId, { text });
+        result = await runAI(env, modelId, { text }, options);
       } else throw e;
     }
 
@@ -257,44 +276,78 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
     if (options.tool_choice) params.tool_choice = options.tool_choice;
   }
 
-  // Tool calling is only reliable in buffered (non-stream) mode for Workers AI,
-  // so when tools are supplied we always take the non-stream path.
-  const useStream = options.stream && !params.tools;
+  // Tool calling is usually only reliable in buffered (non-stream) mode for
+  // Workers AI: streamed tool calls frequently arrive with empty `arguments`.
+  // So whenever tools are in play we take the buffered path to obtain correct
+  // arguments, then re-emit the result as a single SSE chunk (see below) so
+  // streaming callers still receive a well-formed stream.
+  const hasTools = Array.isArray(params.tools) && params.tools.length > 0;
+  const useStream = options.stream && !hasTools;
 
   if (useStream) {
-    const response = await env.AI.run(modelId, params);
-    const reader = response.getReader();
-    const textDecoder = new TextDecoder();
-    const asyncIterable = {
-      async *[Symbol.asyncIterator]() {
-        let buffer = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += textDecoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data: ')) continue;
-            const jsonStr = trimmed.slice(6);
-            if (jsonStr === '[DONE]') return;
-            let parsed;
-            try { parsed = JSON.parse(jsonStr); } catch { continue; }
-            const text = extractText(parsed);
-            const toolCalls = extractToolCalls(parsed);
-            if (text || toolCalls.length) {
-              yield { response: text, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
+    let response = null;
+    try {
+      response = await runAI(env, modelId, params, options);
+      if (response && typeof response.getReader !== 'function') {
+        // Model answered with a buffered object even though we asked to stream.
+        response = { buffered: response };
+      }
+    } catch (e) {
+      // Not all tool-capable models accept stream+tools — fall back to buffered.
+      if (!params.tools) throw e;
+      console.log(`[Providers] ${modelKey} stream+tools failed (${e.message}); falling back to buffered mode`);
+      response = null;
+    }
+
+    if (response?.buffered) {
+      const raw = response.buffered;
+      const toolCalls = extractToolCalls(raw);
+      const content = extractText(raw?.response ?? raw);
+      const chunk = { response: content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
+      const single = {
+        async *[Symbol.asyncIterator]() {
+          yield chunk;
+        },
+      };
+      return { type: 'stream', stream: single, provider: 'cloudflare', model: modelKey, modelId, stream_fallback: true };
+    }
+
+    if (response) {
+      const reader = response.getReader();
+      const textDecoder = new TextDecoder();
+      const asyncIterable = {
+        async *[Symbol.asyncIterator]() {
+          let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += textDecoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data: ')) continue;
+              const jsonStr = trimmed.slice(6);
+              if (jsonStr === '[DONE]') return;
+              let parsed;
+              try { parsed = JSON.parse(jsonStr); } catch { continue; }
+              const text = extractText(parsed);
+              const toolCalls = extractToolCalls(parsed);
+              if (text || toolCalls.length) {
+                yield { response: text, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
+              }
             }
           }
-        }
-      },
-    };
-    return { type: 'stream', stream: asyncIterable, provider: 'cloudflare', model: modelKey, modelId };
+        },
+      };
+      return { type: 'stream', stream: asyncIterable, provider: 'cloudflare', model: modelKey, modelId };
+    }
+    // Streaming failed and tools are in play: drop through to buffered mode.
+    params.stream = false;
   }
 
   const rawParams = params.tools ? { ...params, stream: false } : params;
-  const result = await env.AI.run(modelId, rawParams);
+  const result = await runAI(env, modelId, rawParams, options);
 
   let resp = result?.response ?? result;
   if (typeof resp === 'string') {
@@ -310,18 +363,24 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
   if (toolCalls.length) {
     content = extractText(resp) || (typeof resp === 'string' ? resp : '');
   } else if (resp && typeof resp === 'object' && !Array.isArray(resp)) {
-    if (resp.choices?.[0]?.message?.content || resp.response !== undefined || resp.text !== undefined || resp.content !== undefined) {
-      content = extractText(resp);
-    } else {
-      content = JSON.stringify(resp);
-    }
+    // Some models answer with an OpenAI-shaped completion (`choices[]`) whose
+    // message may only carry `reasoning_content`, or an empty string. Detect
+    // the completion shape (not just truthy content) so we never stringify the
+    // whole envelope into the answer.
+    const isCompletion =
+      Array.isArray(resp.choices) ||
+      resp.response !== undefined ||
+      resp.text !== undefined ||
+      resp.content !== undefined ||
+      resp.type === 'text';
+    content = isCompletion ? extractText(resp) : JSON.stringify(resp);
   } else if (typeof resp === 'string') {
     content = resp;
   } else {
     content = JSON.stringify(resp);
   }
 
-  return {
+  const buffered = {
     type: 'text',
     content,
     tool_calls: toolCalls,
@@ -330,6 +389,20 @@ export async function callCloudflareAI(modelKey, messages, options, env) {
     modelId,
     usage: result?.usage || null,
   };
+
+  // The caller asked for a stream (and tools are present): re-emit the buffered
+  // result as a single SSE chunk so tool arguments stay intact end to end.
+  if (options.stream) {
+    const chunk = { response: content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
+    const single = {
+      async *[Symbol.asyncIterator]() {
+        yield chunk;
+      },
+    };
+    return { type: 'stream', stream: single, provider: 'cloudflare', model: modelKey, modelId };
+  }
+
+  return buffered;
 }
 
 // ── Google (Gemini) native wire format via env.AI.run ──
@@ -364,7 +437,7 @@ async function callGeminiAI(modelKey, messages, options, env, modelId) {
   if (options.stream) {
     let response = null;
     try {
-      response = await env.AI.run(modelId, { ...payload, stream: true });
+      response = await runAI(env, modelId, { ...payload, stream: true }, options);
     } catch (_) {
       response = null; // model/binding without streaming — fall back below
     }
@@ -400,7 +473,7 @@ async function callGeminiAI(modelKey, messages, options, env, modelId) {
     // No native streaming: emit the assembled answer as one stream chunk so the
     // router/SSE contract still holds (latency reporting reflects actual
     // generation, not a fabricated token stream).
-    const text = await geminiText(env, modelId, payload);
+    const text = await geminiText(env, modelId, payload, options);
     return {
       type: 'stream',
       stream: (async function* () { if (text) yield { response: text }; })(),
@@ -411,7 +484,7 @@ async function callGeminiAI(modelKey, messages, options, env, modelId) {
     };
   }
 
-  const text = await geminiText(env, modelId, payload);
+  const text = await geminiText(env, modelId, payload, options);
   return {
     type: 'text',
     content: text,
@@ -422,8 +495,8 @@ async function callGeminiAI(modelKey, messages, options, env, modelId) {
   };
 }
 
-async function geminiText(env, modelId, payload) {
-  const result = await env.AI.run(modelId, payload);
+async function geminiText(env, modelId, payload, options = {}) {
+  const result = await runAI(env, modelId, payload, options);
   if (typeof result === 'string') {
     try { return JSON.parse(result).candidates?.[0]?.content?.parts?.map((p) => p.text).join('') || result; }
     catch (_) { return result; }

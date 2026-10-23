@@ -88,10 +88,11 @@ export async function trackUsage(keyId, env, metadata) {
 
   try {
     const existing = await env.API_KEYS.get(usageKey, { type: 'json' });
-    const usage = existing || { requests: 0, tokens: 0, models: {} };
+    const usage = existing || { requests: 0, tokens: 0, usd: 0, models: {} };
 
     usage.requests += 1;
     usage.tokens += metadata.tokens || 0;
+    usage.usd = Number(((usage.usd || 0) + (metadata.cost_usd || 0)).toFixed(6));
     if (metadata.model) {
       usage.models[metadata.model] = (usage.models[metadata.model] || 0) + 1;
     }

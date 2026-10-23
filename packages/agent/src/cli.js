@@ -2,12 +2,10 @@ import { Command } from 'commander';
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import fs from 'fs-extra';
-import { spawn } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
 import chalk from 'chalk';
-import { ConfigLoader } from './config/loader.js';
-import { WorkerClient } from './client/worker-client.js';
+import readlineSync from 'readline-sync';
+import { ConfigLoader, redactConfig } from './config/loader.js';
+import { ProviderClient } from './client/provider-client.js';
 import { AgentCore } from './core/agent-core.js';
 import { SessionStore } from './session/store.js';
 import { Repl } from './ui/repl.js';
@@ -20,7 +18,7 @@ export class Cli {
     this.binDir = opts.binDir;
     this.sessionId = randomUUID();
     this.configLoader = new ConfigLoader({ cwd: this.cwd, binDir: this.binDir });
-    this.client = new WorkerClient();
+    this.client = new ProviderClient();
     this.agent = new AgentCore({ client: this.client, cwd: this.cwd });
     this.commands = new CommandRegistry({
       cli: this,
@@ -50,16 +48,19 @@ export class Cli {
     process.exit = (code) => {
       try {
         process.stdout.removeListener('resize', resizeHandler);
-      } catch {}
+      } catch (e) {
+        console.debug?.(`Cleanup error: ${e.message}`);
+      }
       return origExit(code);
     };
   }
 
   async initConfig() {
     const { config, source } = await this.configLoader.load();
+    if (!config.apiKey) config.apiKey = await this.configLoader.loadGlobalApiKey();
     this.config = config;
     this.configSource = source;
-    if (!config.workerUrl) config.workerUrl = 'http://127.0.0.1:8787';
+    if (config.provider === 'worker' && !config.workerUrl) config.workerUrl = 'https://devops-ai-agent.ashokkunchla.workers.dev';
     if (config.cwd) {
       this.agent.setCwd(config.cwd);
     }
@@ -67,64 +68,37 @@ export class Cli {
     this.agent.setSessionStore(this.sessionStore);
     this.client.setConfig(config);
     this.agent.setConfig(config);
-    await this.ensureLocalWorker();
   }
 
-  // A global `agent` should be usable from any project directory. When the
-  // configured endpoint is the bundled local Worker and it is not already
-  // running, start the repository's Wrangler dev process in the background.
-  // Deployed/custom Worker URLs are never started or modified.
-  async ensureLocalWorker() {
-    const rawArgs = process.argv.slice(2);
-    if (rawArgs.includes('--help') || rawArgs.includes('-h') || rawArgs.includes('--version') || rawArgs.includes('-V')) return;
-    if (this.config.autoStartWorker === false || !/^https?:\/\/(127\.0\.0\.1|localhost):8787\/?$/i.test(this.config.workerUrl || '')) return;
-    const health = await this.client.health();
-    if (health.ok) return;
-
-    const candidates = [
-      this.binDir ? resolve(this.binDir, '..', '..', '..') : null,
-      this.binDir ? resolve(realpathSync(this.binDir), '..', '..', '..') : null,
-      resolve(process.cwd()),
-    ].filter(Boolean);
-    const repoRoot = candidates.find((candidate) => existsSync(resolve(candidate, 'packages', 'worker', 'wrangler.toml')));
-    if (!repoRoot) return;
-
-    const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    try {
-      const child = spawn(npmCommand, ['run', 'dev', '-w', 'packages/worker'], {
-        cwd: repoRoot,
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-      child.unref();
-      this.workerProcessStarted = true;
-    } catch {
-      return;
+  // Render the onPermission prompt for non-interactive one-shot runs.
+  // Interactive terminals are prompted via readline; piped/non-TTY runs are
+  // denied unless auto-approved in config or `--yes` was passed.
+  onPermission(request) {
+    if (this._yes) return 'allow';
+    if (this.config?.autoApprove === true || this.config?.permissionMode === 'allow') return 'allow';
+    if (this.isInteractive()) {
+      const preview = request?.preview?.lines?.slice(0, 12).join('\n  ') || '';
+      const answer = readlineSync.question(`${chalk.yellow('Permission required')}: ${request.name}${preview ? `\n  ${preview}` : ''}\n  allow? [y]es / [a]lways / [n]o: `, { defaultInput: 'n' });
+      const first = String(answer).trim().toLowerCase();
+      if (first.startsWith('a')) return 'always';
+      if (first.startsWith('y')) return 'allow';
+      return 'deny';
     }
-
-    for (let attempt = 0; attempt < 24; attempt++) {
-      await new Promise((resolveWait) => setTimeout(resolveWait, 500));
-      if ((await this.client.health()).ok) return;
-    }
-  }
-
-  // Render the onPermission prompt for non-interactive one-shot runs. These
-  // runs have no way to ask, so they auto-approve (matching `agent run`).
-  onPermission() {
-    return 'allow';
+    return 'deny';
   }
 
   async run(argv) {
-    await this.initConfig();
+    if (!this.config) await this.initConfig();
     const program = new Command();
     const binName = basename(process.argv[1] || 'agent').replace(/\.(js|mjs|cjs)$/, '');
-    program.name(binName).description('Local terminal agent (opencode-style) backed by the DevOps AI worker').version(pkg.version);
+    program.name(binName).description('Standalone coding agent terminal connected to your Cloudflare Worker').version(pkg.version);
 
     program
       .command('run <prompt...>')
       .description('Run a single prompt through the full agentic tool loop')
-      .action(async (promptParts) => {
+      .option('-y, --yes', 'auto-approve mutating tool calls')
+      .action(async (promptParts, opts) => {
+        this._yes = Boolean(opts.yes);
         const prompt = promptParts.join(' ');
         await this.runOnce(prompt);
       });
@@ -133,23 +107,34 @@ export class Cli {
       .command('chat [message...]')
       .description('Chat once, or open the interactive terminal UI when no message is given')
       .option('-s, --session <id>', 'session id')
+      .option('-y, --yes', 'auto-approve mutating tool calls')
       .action(async (messageParts, opts) => {
         if (!messageParts || !messageParts.length) {
           await this.startInteractive();
           return;
         }
+        this._yes = Boolean(opts.yes);
         const sessionId = opts.session || this.sessionId;
         this._streamed = false;
         const onEvent = (e) => this.renderEvent(e);
-        const res = await this.agent.chat({ message: messageParts.join(' '), sessionId, onEvent });
+        const res = await this.agent.chat({ message: messageParts.join(' '), sessionId, onEvent, onPermission: (r) => this.onPermission(r) });
         if (!this._streamed) console.log(res);
       });
 
     program
       .command('tui')
-      .description('Open the interactive terminal UI (opencode-style)')
+      .description('Open the compact classic TUI')
       .action(async () => {
         await this.startTui();
+      });
+
+    program
+      .command('ui')
+      .description('Open the standalone full-screen agent terminal')
+      .option('--classic', 'open the classic personal terminal instead')
+      .action(async (opts) => {
+        if (opts.classic) return this.startClassicTerminal();
+        await this.startTerminal();
       });
 
     program
@@ -212,53 +197,62 @@ export class Cli {
           this.client.setConfig(this.config);
           this.agent.setConfig(this.config);
         }
-        console.log(JSON.stringify(this.config, null, 2));
+        console.log(JSON.stringify(redactConfig(this.config), null, 2));
       });
 
     program
       .command('setup')
-      .description('Create or update a project-local agent configuration')
+      .description('Configure the Cloudflare Worker or Gemini API provider')
+      .option('--provider <name>', 'model provider: worker | gemini')
       .option('--worker <url>', 'Worker base URL')
+      .option('--gemini-url <url>', 'Gemini OpenAI-compatible API base URL')
       .option('--model <name>', 'model id, or "auto"')
       .option('--api-key <key>', 'Worker API key')
       .option('--no-tools', 'disable local tools')
       .option('--approve', 'auto-approve mutating tool calls')
+      .option('--permission <mode>', 'permission mode: allow | ask | deny')
       .option('--no-check', 'skip automatic post-edit checks')
+      .option('-g, --global', 'write to the user-global config (applies to every project)')
       .action(async (opts) => {
         const next = { ...this.config };
-        if (opts.worker) next.workerUrl = opts.worker;
+        if (opts.provider) next.provider = opts.provider;
+        if (opts.worker) { next.workerUrl = opts.worker; next.provider = 'worker'; }
+        if (opts.geminiUrl) { next.geminiUrl = opts.geminiUrl; next.provider = 'gemini'; }
         if (opts.model) next.model = opts.model;
         if (opts.apiKey) next.apiKey = opts.apiKey;
         if (opts.tools === false) next.tools = false;
         if (opts.approve) next.autoApprove = true;
+        if (opts.permission) { next.permissionMode = opts.permission; delete next.autoApprove; }
         if (opts.check === false) next.autoCheck = false;
-        const target = await this.configLoader.save(next);
+        const target = opts.global
+          ? await this.configLoader.save(next, this.configLoader.globalConfigPath())
+          : await this.configLoader.save(next);
         this.config = next;
         this.client.setConfig(next);
         this.agent.setConfig(next);
-        console.log(chalk.green(`Configured agent for this project: ${target}`));
-        console.log(chalk.gray(`worker: ${next.workerUrl}  model: ${next.model || 'auto'}  tools: ${next.tools !== false ? 'on' : 'off'}`));
-        if (opts.apiKey) console.log(chalk.yellow('The project config contains an API key. Keep .agent/config.json out of version control.'));
-        console.log(chalk.gray('Run `agent doctor` to verify the Worker, then `agent` to start the terminal UI.'));
+        console.log(chalk.green(`${opts.global ? 'Configured agent globally' : 'Configured agent for this project'}: ${target}`));
+        console.log(chalk.gray(`provider: ${next.provider}  model: ${next.model || 'choose a model'}  tools: ${next.tools !== false ? 'on' : 'off'}`));
+        if (opts.apiKey) console.log(chalk.yellow('The API key is saved in your user/project config. Prefer GEMINI_API_KEY or the provider environment variable to keep credentials out of config files.'));
+        console.log(chalk.gray('Run ' + binName + ' doctor to verify the provider, then ' + binName + ' to start the terminal.'));
       });
 
     program
       .command('doctor')
-      .description('Check terminal, project, configuration, and Worker connectivity')
+      .description('Check terminal, project, configuration, and model provider connectivity')
       .action(async () => {
         await this.runDoctor();
       });
 
     program
       .command('health')
-      .description('Check worker health')
+      .description('Check model provider health')
       .action(async () => {
         console.log(await this.client.health());
       });
 
     program
       .command('models')
-      .description('List models available on the worker')
+      .description('List models available from the configured provider')
       .action(async () => {
         const models = await this.client.models();
         for (const m of models) console.log(`${m.id}\t${m.name || ''}`);
@@ -277,10 +271,62 @@ export class Cli {
 
   async startInteractive() {
     if (this.isInteractive()) {
-      await this.startTui();
+      await this.startTerminal();
     } else {
       await this.startRepl();
     }
+  }
+
+  async startTerminal() {
+    // Ink needs a TTY (raw mode). In pipes/CI fall back to the line REPL
+    // instead of crashing with Ink's raw-mode error.
+    if (!this.isInteractive()) {
+      console.log(chalk.yellow('No TTY detected — falling back to the line REPL.'));
+      return this.startRepl();
+    }
+    if (this.config?.provider === 'worker' && !this.client.apiKey) {
+      const key = readlineSync.question(chalk.cyan('Worker API key: '), { hideEchoBack: true, mask: '*' }).trim();
+      if (!key) {
+        console.error(chalk.red('A Worker API key is required. Set WORKER_API_KEY or run `agent setup --api-key <key>`.'));
+        process.exitCode = 1;
+        return;
+      }
+      this.config.apiKey = key;
+      this.client.setConfig(this.config);
+      const target = await this.configLoader.saveGlobalApiKey(key);
+      console.log(chalk.gray(`Worker key saved to your user config: ${target}`));
+    }
+    try {
+      const { startNeoTerminal } = await import('./ui/neo.js');
+      await startNeoTerminal({
+        cli: this,
+        agent: this.agent,
+        client: this.client,
+        commands: this.commands,
+        config: this.config,
+        moduleName: 'agent-terminal',
+      });
+      return;
+    } catch (error) {
+      console.log(chalk.yellow(`Neo terminal unavailable (${error.message}) — using the classic terminal.`));
+    }
+    await this.startClassicTerminal();
+  }
+
+  async startClassicTerminal() {
+    if (!this.isInteractive()) {
+      console.log(chalk.yellow('No TTY detected — falling back to the line REPL.'));
+      return this.startRepl();
+    }
+    const { startTerminal } = await import('./ui/terminal.js');
+    await startTerminal({
+      cli: this,
+      agent: this.agent,
+      client: this.client,
+      commands: this.commands,
+      config: this.config,
+      moduleName: 'agent-terminal',
+    });
   }
 
   async startTui() {
@@ -298,19 +344,35 @@ export class Cli {
     if (event.type === 'content') {
       this._streamed = true;
       process.stdout.write(event.text);
+    } else if (event.type === 'reasoning') {
+      process.stdout.write(chalk.gray(`\n  ✻ ${String(event.text).slice(0, 200)}`));
     } else if (event.type === 'tool_start') {
       if (this._streamed) { process.stdout.write('\n'); this._streamed = false; }
-      process.stdout.write(chalk.cyan(`  ⏺ ${event.name}\n`));
+      process.stdout.write(chalk.cyan(`  ⏺ ${event.name}${event.scope ? chalk.gray(` [${event.scope}]`) : ''}\n`));
     } else if (event.type === 'tool_end') {
-      const out = (event.result?.output || '').split('\n')[0].slice(0, 200);
-      process.stdout.write(chalk.gray(`     ⎿ ${out}\n`));
+      const diff = event.result?.metadata?.diff;
+      if (Array.isArray(diff) && diff.length) {
+        for (const line of diff.slice(0, 20)) {
+          const text = String(line.text).slice(0, 160);
+          if (line.type === 'add') process.stdout.write(chalk.green(`     + ${text}\n`));
+          else if (line.type === 'del') process.stdout.write(chalk.red(`     - ${text}\n`));
+          else process.stdout.write(chalk.gray(`       ${text}\n`));
+        }
+      } else {
+        const out = (event.result?.output || '').split('\n')[0].slice(0, 200);
+        process.stdout.write(chalk.gray(`     ⎿ ${out}\n`));
+      }
+    } else if (event.type === 'warning') {
+      process.stdout.write(chalk.yellow(`\n  ! ${event.text}\n`));
+    } else if (event.type === 'error') {
+      process.stdout.write(chalk.red(`\n  ✗ ${event.text}\n`));
     }
   }
 
   async runOnce(prompt) {
     this._streamed = false;
     try {
-      const res = await this.agent.chat({ message: prompt, sessionId: this.sessionId, onEvent: (e) => this.renderEvent(e) });
+      const res = await this.agent.chat({ message: prompt, sessionId: this.sessionId, onEvent: (e) => this.renderEvent(e), onPermission: (r) => this.onPermission(r) });
       if (this._streamed) process.stdout.write('\n');
       else console.log(res);
     } catch (e) {
@@ -344,7 +406,7 @@ export class Cli {
     });
     checks.push({
       name: 'Configuration',
-      ok: Boolean(this.config.workerUrl),
+      ok: this.client.configured,
       detail: this.configSource || 'defaults (run `agent setup` to create a project config)',
     });
     checks.push({
@@ -355,7 +417,7 @@ export class Cli {
 
     const health = await this.client.health();
     checks.push({
-      name: 'Worker health',
+      name: `${this.config.provider || 'worker'} health`,
       ok: Boolean(health.ok),
       detail: health.ok ? `HTTP ${health.status}` : health.error || `HTTP ${health.status || 'unreachable'}`,
     });
@@ -372,7 +434,7 @@ export class Cli {
       console.log(`${marker}  ${check.name.padEnd(16)} ${chalk.gray(check.detail)}`);
     }
     if (!health.ok) {
-      console.log(chalk.yellow('\nStart the local backend with `npm run dev:worker`, or run `agent setup --worker <deployed-worker-url>`.'));
+      console.log(chalk.yellow('\nStart the local backend with `npm run dev:worker`, or configure a deployed Worker with `agent setup --worker <url> --api-key <key>`.'));
       process.exitCode = 1;
     }
   }

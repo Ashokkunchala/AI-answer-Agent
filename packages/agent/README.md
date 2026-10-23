@@ -60,6 +60,7 @@ The terminal UI is designed for longer coding tasks instead of one-shot chat:
 - Tool results are compact by default; press **Tab** to expand or collapse their output.
 - Press **Ctrl+P** to show or hide the work plan, **Ctrl+L** to clear the visible transcript, and **Esc** to cancel an active task.
 - By default, the agent carries out workspace edits and CLI commands without stopping for approval. Use `/permissions ask` to review changes before they run, or `/permissions deny` to block mutations.
+- Credential files, private keys, and paths outside the workspace still require confirmation; an ask-mode session without an approval handler denies the action.
 - Use natural language for substantial jobs, for example: `Review the worker routing, fix the fallback bug, and run the tests.` The agent plans, investigates, edits, and checks its work in one task.
 
 ## Install and launch

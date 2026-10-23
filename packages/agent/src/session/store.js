@@ -1,19 +1,23 @@
 import fs from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
+import { storageFilename } from '../utils/ids.js';
 
 export function defaultSessionsDir() {
-  return path.join(os.homedir(), '.workercli', 'sessions');
+  const home = os.homedir();
+  const legacyDir = path.join(home, '.workercli', 'sessions');
+  return fs.pathExistsSync(legacyDir) ? legacyDir : path.join(home, '.agent-terminal', 'sessions');
 }
 
-// Simple JSON-per-session store under ~/.workercli/sessions (overridable).
+// JSON-per-session store under ~/.agent-terminal/sessions, retaining an
+// existing workercli session directory for upgrade compatibility.
 export class SessionStore {
   constructor(opts = {}) {
     this.dir = opts.dir || defaultSessionsDir();
   }
 
   file(id) {
-    return path.join(this.dir, `${id}.json`);
+    return path.join(this.dir, storageFilename(id));
   }
 
   async save(session) {
@@ -64,5 +68,20 @@ export class SessionStore {
       return true;
     }
     return false;
+  }
+
+  // Fork a session into a new id, copying its messages and summary.
+  async fork(id, newId) {
+    const source = await this.load(id);
+    if (!source) return null;
+    const copy = {
+      ...source,
+      id: newId,
+      title: `${source.title || 'session'} (branch)`,
+      createdAt: new Date().toISOString(),
+      branchedFrom: id,
+    };
+    await this.save(copy);
+    return copy;
   }
 }

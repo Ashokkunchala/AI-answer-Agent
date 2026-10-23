@@ -1,5 +1,17 @@
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+
+const require = createRequire(import.meta.url);
+
+// Spawn the locally installed wrangler with the current Node binary. Going
+// through `npx` breaks on Windows (execFileSync cannot spawn npx.cmd without
+// a shell), which made this preflight fail on every Windows checkout.
+function resolveWranglerBin() {
+  const pkgPath = require.resolve('wrangler/package.json');
+  return join(dirname(pkgPath), 'bin', 'wrangler.js');
+}
 
 const requiredFiles = [
   'packages/worker/src/entrypoint.js',
@@ -31,7 +43,7 @@ try {
 }
 
 try {
-  execFileSync('npx', ['wrangler', 'deploy', '--dry-run'], { cwd: 'packages/worker', stdio: 'inherit' });
+  execFileSync(process.execPath, [resolveWranglerBin(), 'deploy', '--dry-run'], { cwd: 'packages/worker', stdio: 'inherit' });
   console.log('✓ Wrangler dry-run');
 } catch {
   console.error('✗ Wrangler dry-run failed');

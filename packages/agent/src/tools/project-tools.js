@@ -21,6 +21,7 @@ export class ProjectTools {
   get tools() {
     const projectmap = defineTool({
       name: 'projectmap',
+      category: 'search',
       description: 'Build a compact inventory of the current repository: source layout, file counts by extension, and key project files. Use this before explaining a whole project or repository.',
       parameters: {
         type: 'object',

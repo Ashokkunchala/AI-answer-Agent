@@ -3,72 +3,115 @@ main = "src/entrypoint.js"
 compatibility_date = "2026-09-27"
 compatibility_flags = ["nodejs_compat"]
 
+# Pay-as-you-go is NOT a wrangler.toml field in Wrangler v4 — it is a Cloudflare
+# account + script setting. Workers Paid's current usage model is named
+# "standard" (the legacy names were "bundled" and "unbound"); there is no
+# "pay-per-request" value and the API rejects it with
+#   Invalid usage model. Please provide a valid usage model: 'standard'.
+# This account is already on it:
+#   GET  /accounts/{id}/workers/account-settings
+#        -> { "default_usage_model": "standard", "green_compute": false }
+#   GET  /accounts/{id}/workers/scripts/devops-ai-agent/settings
+#        -> { "usage_model": "standard" }
+# Usage models are read from the dashboard (Workers & Pages > account > Usage
+# Model > Change) or via PUT /accounts/{id}/workers/account-settings, which
+# needs an API token with the "Account Settings Write" permission.
+# See docs/PRODUCTION_RUNBOOK.md.
+
+[triggers]
+crons = ["* * * * *"]
+
 [observability]
 enabled = true
 
 [vars]
 ENVIRONMENT = "production"
+WORKERS_AI_ACCOUNT_ID = "808e003dfdde0e801aac9c88aa7c9b84"
+# ── Cost guard (Workers AI) ──────────────────────────────────────────────────
+# Pay-as-you-go. The account is on the Workers Paid plan with the Standard
+# usage model, so requests are billed per request/CPU-ms and Workers AI is
+# billed per neuron/token with no CPU-time ceiling and no request cap.
+# Workers AI still grants NEURON_FREE_DAILY free neurons per day; the router
+# spends that allowance first, then bills per token/neuron.
+# BUDGET_MONTHLY_USD = 0 means the router has no application-level spend cap
+# (no `saver` / `blocked` mode). Cloudflare account billing and payment
+# methods still apply independently of this worker.
+NEURON_FREE_DAILY = "10000"
+BUDGET_MONTHLY_USD = "0"
+BUDGET_SAVER_PCT = "0.8"
+# 0 = no per-request output cap; each call may use the model's own max_tokens.
+MAX_OUTPUT_TOKENS = "0"
+# After the account's daily free allocation, retry through this Gateway using
+# Unified billing. Configure Workers AI prepaid credits on the Gateway first.
+AI_GATEWAY_ID = "default"
 
 # Optional AI Gateway credentials must be stored as Wrangler secrets.
+# Live model catalog refresh needs a secret with Workers AI Read permission:
+#   npx wrangler secret put WORKERS_AI_CATALOG_TOKEN
+# Account ID is configured in WORKERS_AI_ACCOUNT_ID above.
 # npx wrangler secret put GATEWAY_API_TOKEN
 # npx wrangler secret put GATEWAY_API_KEY
 
+# API keys (rate limiting, tiers)
+# Set the secret required by the public dashboard's key-management actions:
+#   npx wrangler secret put ADMIN_API_KEY
 [[kv_namespaces]]
 binding = "API_KEYS"
 id = "c86c6823303947c49f35fa12cb52df8f"
+
+# Hot response cache. Caches identical non-stream requests so repeated calls
+# skip the model entirely - saves neurons and keeps answers fast.
+[[kv_namespaces]]
+binding = "AI_CACHE"
+id = "4a0f68adc2df4c058a34701375af8597"
 
 [ai]
 binding = "AI"
 
 # -----------------------------------------------------------------------------
-# FREE-FIRST CLOUDflare RESOURCES
+# CLOUDFLARE RESOURCES (verified against account 808e003dfdde0e801aac9c88aa7c9b84)
 # -----------------------------------------------------------------------------
-# Existing account-specific IDs stay commented until provisioned in your
-# Cloudflare account. Never invent IDs or commit secrets.
 
-# Hot response/config cache
-# [[kv_namespaces]]
-# binding = "AI_CACHE"
-# id = "YOUR_AI_CACHE_KV_ID"
-
-# Persistent interview data
-# [[d1_databases]]
-# binding = "INTERVIEW_DB"
-# database_name = "ai-answer-agent"
-# database_id = "YOUR_D1_DATABASE_ID"
-# migrations_dir = "migrations"
+# Persistent interview data. Migrations 0001-0003 applied via:
+#   npx wrangler d1 migrations apply ai-answer-agent --remote
+[[d1_databases]]
+binding = "INTERVIEW_DB"
+database_name = "ai-answer-agent"
+database_id = "1ba7b330-01a5-46f2-a7e4-081e94229b25"
+migrations_dir = "migrations"
 
 # Resume/JD/transcript/report objects
-# [[r2_buckets]]
-# binding = "AI_ASSETS"
-# bucket_name = "ai-answer-agent-assets"
+[[r2_buckets]]
+binding = "AI_ASSETS"
+bucket_name = "ai-answer-agent-assets"
 
-# Live interview state; SQLite-backed DO is supported on Workers Free.
+# Background interview work (async, keeps request latency low)
+[[queues.producers]]
+binding = "INTERVIEW_QUEUE"
+queue = "ai-answer-agent-interview"
+
+# Durable post-interview analysis (scoring + report generation)
+[[workflows]]
+name = "interview-analysis"
+binding = "INTERVIEW_WORKFLOW"
+class_name = "InterviewAnalysisWorkflow"
+
+# Semantic resume/JD/project retrieval (768-dim BGE base embeddings).
+# Created with:
+#   npx wrangler vectorize create ai-answer-agent-context --dimensions=768 --metric=cosine
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "ai-answer-agent-context"
+
+# Live interview state. Durable Object binding is intentionally left off:
+# this account already has devops-ai-agent_AgentSession / _AudioEncoder
+# namespaces, so adding a fresh DO migration needs a coordinated migration tag.
+# The voice socket (src/voice/interview-socket.js) is fully guarded and runs
+# stateless when this binding is absent - voice never fails either way.
 # [[durable_objects.bindings]]
 # name = "INTERVIEW_SESSIONS"
 # class_name = "InterviewSession"
 #
 # [[migrations]]
-# tag = "v1"
+# tag = "voice-state-v1"
 # new_sqlite_classes = ["InterviewSession"]
-
-# Background interview work
-# [[queues.producers]]
-# binding = "INTERVIEW_QUEUE"
-# queue = "ai-answer-agent-interview"
-
-# Durable post-interview analysis
-# [[workflows]]
-# name = "interview-analysis"
-# binding = "INTERVIEW_WORKFLOW"
-# class_name = "InterviewAnalysisWorkflow"
-
-# Semantic resume/JD/project retrieval.
-# Vectorize currently has a Workers Free allocation; this index uses the
-# 768-dimensional BGE base embedding model configured in src/interview/retrieval.js.
-# Create it once with:
-#   npx wrangler vectorize create ai-answer-agent-context --dimensions=768 --metric=cosine
-# Then enable:
-# [[vectorize]]
-# binding = "VECTORIZE"
-# index_name = "ai-answer-agent-context"
